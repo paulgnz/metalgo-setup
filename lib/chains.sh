@@ -198,12 +198,13 @@ validator_settings() {
   mode=$(stat -c '%a' "$cfg") owner=$(stat -c '%U:%G' "$cfg")
   # A chain config can hold an RPC password: never shown, even in a dry run.
   SECRET_CONTENT=1
-  write_file "$cfg" "0$mode" "$owner" < <(
-    # shellcheck disable=SC2086 # the pinned admins are space-separated
-    jq --argjson admins "$(printf '%s\n' $admins | jq -R . | jq -sc 'map(select(. != ""))')" --arg mining "$mining" '
+  local merged
+  # shellcheck disable=SC2086 # the pinned admins are space-separated
+  merged=$(jq --argjson admins "$(printf '%s\n' $admins | jq -R . | jq -sc 'map(select(. != ""))')" --arg mining "$mining" '
       (if ($admins | length) > 0 then .validatorAdmins = $admins else . end)
-      | (if $mining != "" then .miningAddrs = [$mining] else . end)' "$cfg"
-  )
+      | (if $mining != "" then .miningAddrs = [$mining] else . end)' "$cfg") &&
+    [[ -n $merged ]] || die "$cfg isn't valid JSON; fix it, then re-run"
+  write_file "$cfg" "0$mode" "$owner" <<<"$merged"
   SECRET_CONTENT=0
   if ((FILE_CHANGED)); then
     NODE_CHANGED=1
@@ -291,6 +292,22 @@ edit_track_flag() {
   '
 }
 
+# tracked_writable LIST: dies, before anything changes, if track-subnets
+# can't be set to LIST where metalgo reads it (write_tracked's cases).
+tracked_writable() {
+  local new=$1 where=$TRACK_SRC
+  [[ $where == default ]] && { [[ $CFG_SRC == file && $CFG_TYPE == json ]] && where=config || where=flag-add; }
+  case $where in
+    config) [[ $CFG_TYPE == json ]] ||
+      die "track-subnets is set in $CFG_FILE ($CFG_TYPE), which metalgo-setup doesn't edit. Set it yourself: track-subnets: \"$new\", then re-run" ;;
+    flag-add) ((UNIT_EXEC_ARGV0)) &&
+      die "$UNIT_NAME.service's ExecStart sets argv[0] (@); add --track-subnets=$new to it yourself" ;;
+    env) die "track-subnets comes from AVAGO_TRACK_SUBNETS in $UNIT_NAME.service's environment, which metalgo-setup doesn't edit. Set AVAGO_TRACK_SUBNETS=$new yourself, then re-run" ;;
+    content) die "track-subnets comes from --config-file-content (base64), which metalgo-setup doesn't edit. Set track-subnets to \"$new\" there yourself, then re-run" ;;
+  esac
+  return 0
+}
+
 # write_tracked LIST: sets the node's track-subnets to LIST (comma
 # separated), wherever metalgo reads it from.
 write_tracked() {
@@ -306,11 +323,12 @@ write_tracked() {
       local mode owner
       mode=$(stat -c '%a' "$CFG_FILE") owner=$(stat -c '%U:%G' "$CFG_FILE")
       log "track-subnets in $CFG_FILE"
-      write_file "$CFG_FILE" "0$mode" "$owner" < <(
-        jq --arg new "$new" '
+      local edited
+      edited=$(jq --arg new "$new" '
           ([keys[] | select(ascii_downcase == "track-subnets")] | last // "track-subnets") as $k
-          | if $new == "" then del(.[$k]) else .[$k] = $new end' "$CFG_FILE"
-      )
+          | if $new == "" then del(.[$k]) else .[$k] = $new end' "$CFG_FILE") &&
+        [[ -n $edited ]] || die "$CFG_FILE isn't valid JSON; fix it, then re-run"
+      write_file "$CFG_FILE" "0$mode" "$owner" <<<"$edited"
       ;;
     flag | flag-add)
       local file=$UNIT_EXEC_FILE add=0
@@ -410,6 +428,13 @@ EOF
 }
 
 # --- Removing -----------------------------------------------------------------------
+# inside PATH DIR: PATH, canonicalised, is strictly inside DIR (not DIR).
+inside() {
+  local p d
+  p=$(realpath -m -- "$1") d=$(realpath -m -- "$2")
+  [[ $p == "$d"/* ]]
+}
+
 remove_chain() {
   local c=$1 title id vmid cfg state data='' logs=''
   title=$(chain_var "$c" TITLE) id=$(chain_var "$c" CHAIN_ID) vmid=$(chain_var "$c" VM_ID)
@@ -429,16 +454,26 @@ remove_chain() {
   fi
   state=$(chain_state_dir "$c")
   if ((PURGE)); then
-    local p
-    for p in "$data" "$logs" "$state" "$DATA_DIR/chainData/$id" "$CHAIN_CONFIG_DIR/$id"; do
-      [[ -n $p && -e $p ]] || continue
-      # Only ever delete inside the node's own directories.
-      if [[ $p == "$DATA_DIR"/* || $p == "$CHAIN_CONFIG_DIR"/* ]]; then
-        run rm -rf -- "$p"
-        info "deleted $p"
-      else
-        warn "not deleting $p: outside $DATA_DIR"
+    # Deletes only directories this L1 alone owns: its state dir, metalgo's
+    # chainData for it, and its chain config dir, each canonicalised and
+    # strictly inside its parent. A dataDir or logDir from the (node-owned)
+    # config counts only if it resolves inside the L1's state dir; anything
+    # else, such as "/var/lib/metalgo/l1/../db", is left alone.
+    local p within
+    for p in "$state" "$DATA_DIR/chainData/$id" "$CHAIN_CONFIG_DIR/$id" "$data" "$logs"; do
+      [[ -n $p ]] || continue
+      case $p in
+        "$data" | "$logs") within=$state ;;
+        "$CHAIN_CONFIG_DIR/$id") within=$CHAIN_CONFIG_DIR ;;
+        *) within=$DATA_DIR ;;
+      esac
+      if ! inside "$p" "$within"; then
+        warn "not deleting $p: it isn't inside $within"
+        continue
       fi
+      [[ -e $p ]] || continue
+      run rm -rf -- "$(realpath -m -- "$p")"
+      info "deleted $p"
     done
   else
     info "kept its data and config (--purge deletes them): ${cfg:-no config}${data:+, $data}${logs:+, $logs}"
@@ -450,6 +485,11 @@ remove_chain() {
 # config's rpcUser/rpcPass (fed to curl on stdin, never on its command line).
 rpc_height() {
   local url=$1 auth=$2
+  # The credentials come from a node-owned file: nothing that could end the
+  # quoted curl config value or start another directive.
+  [[ $auth == *[[:cntrl:]]* ]] && return 0
+  auth=${auth//\\/\\\\}
+  auth=${auth//\"/\\\"}
   printf 'user = "%s"\n' "$auth" |
     curl -s -m 10 -K - ${CURL_TLS[@]+"${CURL_TLS[@]}"} -H 'content-type: application/json' \
       -d '{"jsonrpc":"1.0","id":1,"method":"getblockcount","params":[]}' "$url" 2>/dev/null |

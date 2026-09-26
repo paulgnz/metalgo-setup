@@ -88,7 +88,9 @@ dogevm_L1_TOOL=dogevm-l1
 # sign a validator change (proof of authority; vm/validator_manager.go in
 # each VM repo). Written into every chain config as "validatorAdmins", so a
 # node registered as a validator co-signs approved changes. Public
-# addresses, space-separated; empty until the L1's admin key exists.
+# addresses, space-separated. Empty until the L1's admin keys exist and its
+# validators run a plugin with the validator manager (the COMMIT pins above
+# predate it): until then the L1 takes no new validators.
 btcvm_VALIDATOR_ADMINS=""
 ltcvm_VALIDATOR_ADMINS=""
 dogevm_VALIDATOR_ADMINS=""

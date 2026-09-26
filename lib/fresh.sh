@@ -181,9 +181,10 @@ fresh_config() {
 EOF
   )
   if [[ -r $FRESH_CONFIG ]]; then
-    write_file "$FRESH_CONFIG" 0644 root:root < <(
-      jq --argjson m "$managed" '. + $m | if $m."track-subnets" then . else del(."track-subnets") end' "$FRESH_CONFIG"
-    )
+    local merged
+    merged=$(jq --argjson m "$managed" '. + $m | if $m."track-subnets" then . else del(."track-subnets") end' "$FRESH_CONFIG") &&
+      [[ -n $merged ]] || die "$FRESH_CONFIG isn't valid JSON; fix or move it, then re-run"
+    write_file "$FRESH_CONFIG" 0644 root:root <<<"$merged"
   else
     write_file "$FRESH_CONFIG" 0644 root:root <<<"$managed"
   fi

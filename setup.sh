@@ -321,7 +321,7 @@ check_existing() {
   network_is_mainnet "$NETWORK" || die "$UNIT_NAME runs on network '$NETWORK'; metalgo-setup is for Metal mainnet only"
   [[ -x $NODE_BIN ]] || die "$UNIT_NAME.service runs $NODE_BIN, which isn't an executable file"
   local v
-  v=$(metalgo_version "$NODE_BIN")
+  v=$(metalgo_version "$NODE_BIN" "$UNIT_USER")
   [[ $v =~ rpcchainvm=([0-9]+) ]] || die "can't tell the plugin protocol of $NODE_BIN ('$NODE_BIN --version' says '$v')"
   if [[ ${BASH_REMATCH[1]} != "$METALGO_RPCCHAINVM" ]]; then
     die "$NODE_BIN speaks plugin protocol rpcchainvm=${BASH_REMATCH[1]}, but the L1 plugins need rpcchainvm=$METALGO_RPCCHAINVM (metalgo v1.13.4 or $METALGO_VERSION). Upgrade metalgo first, then re-run."
@@ -378,6 +378,12 @@ restart_node() {
   fi
   if [[ $SITUATION != existing ]]; then
     run systemctl enable "$unit"
+  fi
+  if [[ $SITUATION != fresh ]] && ! ((RESTART)) && ! ((DRY_RUN)) && ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+    # Stopped on purpose, perhaps for maintenance: --no-restart leaves it so.
+    RESTARTED=0
+    warn "$UNIT_NAME is stopped; leaving it stopped (--no-restart). Start it when ready: sudo systemctl start $UNIT_NAME"
+    return 0
   fi
   if [[ $SITUATION == fresh ]] || { ! ((DRY_RUN)) && ! systemctl is-active --quiet "$unit" 2>/dev/null; }; then
     log "Starting $UNIT_NAME"
@@ -486,6 +492,10 @@ validator_report() {
       else
         warn "$title: this node validates but has no miningAddrs, so it builds no blocks and earns nothing: sudo ./setup.sh --mining-address $c=YOUR_ADDRESS"
       fi
+    elif [[ -z $(chain_var "$c" VALIDATOR_ADMINS) ]]; then
+      # No admins pinned: this L1's validators can't approve anyone yet
+      # (they must first run the validator-manager plugin, with admins).
+      info "$title: follower. This L1 doesn't take new validators yet."
     else
       info "$title: follower (not a validator)${mining:+; fees would go to $mining}"
       info "    to apply: $tool request -node-uri $NODE_API -owner P-metal1YOUR_ADDRESS > request.json"
@@ -569,6 +579,17 @@ EOF
     fi
     if ((${#CHAINS[@]})); then
       apt_install ca-certificates curl git build-essential jq openssl perl
+    fi
+    if ((${#CHAINS[@]} || ${#REMOVE[@]})); then
+      # Before changing anything: can the new track-subnets be written?
+      local want_now=()
+      mapfile -t want_now < <(desired_tracked)
+      if [[ "${want_now[*]:-}" != "${TRACKED[*]:-}" ]]; then
+        tracked_writable "$(
+          IFS=,
+          printf '%s' "${want_now[*]:-}"
+        )"
+      fi
     fi
     if ((${#CHAINS[@]})) || [[ -n $(installed_chains) ]]; then
       workdir_guard

@@ -147,7 +147,7 @@ settling() {
   local attempt
   for attempt in $(seq 16); do
     "$@" 2>"$T/settling.err" && return 0
-    if grep -qE "changed moments ago|failed verifying warp" "$T/settling.err"; then
+    if grep -qE "changed moments ago|failed verifying warp|conflicts with other tx|insufficient funds" "$T/settling.err"; then
       printf '    (validator set settling: retry %d)\n' "$attempt" >&2
       sleep 20
       continue
@@ -167,7 +167,7 @@ join_one() { # CHAIN SERVER
   approve_register() {
     "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$n.json" \
       -key "$T/admin.json" -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >"$reg" || return 1
-    "$T/$c-l1" register -registration "$reg" -key "$T/payer.json" -uri "$(uri 1)" -balance 1 >"$T/registered-$c-$n.json.tmp" &&
+    "$T/$c-l1" register -registration "$reg" -key "$T/payer.json" -uri "$(uri "$n")" -balance 1 >"$T/registered-$c-$n.json.tmp" &&
       mv "$T/registered-$c-$n.json.tmp" "$T/registered-$c-$n.json"
   }
   settling approve_register

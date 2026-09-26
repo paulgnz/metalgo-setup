@@ -244,13 +244,19 @@ unit_workdir() {
   printf '%s' "${wd:-/}"
 }
 
-# relative_paths: 1 if any path-like setting (a *-dir or *-file flag or
-# config key) is relative, so moving the working directory would move it.
+# relative_paths: 1 if any path-like setting (a *-dir or *-file flag,
+# AVAGO_*_DIR or AVAGO_*_FILE variable, or config key) is relative, so
+# moving the working directory would move it.
 relative_paths() {
   local k v
   for k in "${!FLAGS[@]}"; do
     [[ $k == *-dir || $k == *-file ]] || continue
     v=${FLAGS[$k]}
+    [[ -n $v && $v != /* && $v != '$'* ]] && { echo 1; return; }
+  done
+  for k in "${!UENV[@]}"; do
+    [[ $k == AVAGO_*_DIR || $k == AVAGO_*_FILE ]] || continue
+    v=${UENV[$k]}
     [[ -n $v && $v != /* && $v != '$'* ]] && { echo 1; return; }
   done
   jq -r 'to_entries[] | select(.key | test("-(dir|file)$"; "i")) | .value | strings' <<<"$CFG_JSON" 2>/dev/null |
@@ -423,9 +429,16 @@ network_is_mainnet() {
   return 1
 }
 
-# metalgo_version BIN: its --version line.
+# metalgo_version BIN [USER]: its --version line. An existing node's binary
+# may be writable by its service user, so it runs as that user (never as
+# root, which would hand root to whoever can replace the file).
 metalgo_version() {
-  "$1" --version 2>/dev/null | head -1
+  local bin=$1 user=${2:-root}
+  if [[ $user != root && $EUID -eq 0 ]]; then
+    runuser -u "$user" -- env -i PATH=/usr/bin:/bin "$bin" --version 2>/dev/null | head -1
+  else
+    "$bin" --version 2>/dev/null | head -1
+  fi
 }
 
 # is_tracked SUBNET
