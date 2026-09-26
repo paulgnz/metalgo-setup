@@ -230,11 +230,32 @@ expand_exec_word() {
 
 # abs_path PATH: relative paths are relative to the working directory.
 abs_path() {
-  local p=$1 wd=${UNIT_WORKDIR:-/}
+  local p=$1
+  [[ $p == /* || -z $p ]] && { printf '%s' "$p"; return; }
+  printf '%s/%s' "$(unit_workdir)" "$p"
+}
+
+# unit_workdir: the service's working directory ("/" unless set).
+unit_workdir() {
+  local wd=${UNIT_WORKDIR:-/}
   wd=${wd#-}
   [[ $wd == '~' ]] && wd=${UENV[HOME]:-/}
-  [[ $p == /* || -z $p ]] && { printf '%s' "$p"; return; }
-  printf '%s/%s' "${wd%/}" "$p"
+  wd=${wd%/}
+  printf '%s' "${wd:-/}"
+}
+
+# relative_paths: 1 if any path-like setting (a *-dir or *-file flag or
+# config key) is relative, so moving the working directory would move it.
+relative_paths() {
+  local k v
+  for k in "${!FLAGS[@]}"; do
+    [[ $k == *-dir || $k == *-file ]] || continue
+    v=${FLAGS[$k]}
+    [[ -n $v && $v != /* && $v != '$'* ]] && { echo 1; return; }
+  done
+  jq -r 'to_entries[] | select(.key | test("-(dir|file)$"; "i")) | .value | strings' <<<"$CFG_JSON" 2>/dev/null |
+    grep -qvE '^(/|\$|$)' && { echo 1; return; }
+  echo 0
 }
 
 # parse_exec: splits ExecStart into NODE_BIN and FLAGS (name -> value, the
@@ -378,6 +399,8 @@ resolve_node() {
   TRACKED=()
   local s
   for s in ${v//,/ }; do TRACKED+=("$s"); done
+
+  REL_PATHS=$(relative_paths)
 
   PARTIAL_SYNC=0
   is_true "$(setting partial-sync-primary-network false)" && PARTIAL_SYNC=1

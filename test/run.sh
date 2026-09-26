@@ -14,7 +14,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
 OUT=$HERE/out
 IMAGE=metalgo-setup-test
-SCENARIOS=(fresh-l1-only fresh-full flags-unit config-file-unit defaults-unit refusals config-file-options)
+SCENARIOS=(fresh-l1-only fresh-full flags-unit config-file-unit defaults-unit refusals config-file-options validator-settings workdir-guard)
 mkdir -p "$OUT"
 
 docker build -q --platform linux/amd64 -t "$IMAGE" "$HERE" >/dev/null

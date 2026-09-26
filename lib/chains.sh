@@ -167,6 +167,94 @@ EOF
   NODE_CHANGED=1
 }
 
+# --- Validator settings ---------------------------------------------------------------
+# mining_address CHAIN: the --mining-address given for CHAIN, if any.
+mining_address() {
+  local v="MINING_$1"
+  printf '%s' "${!v:-}"
+}
+
+# validator_settings CHAIN: puts two settings into the chain's config, as
+# asked or pinned, keeping everything else in it:
+#   miningAddrs      where this node's block fees go once it validates the L1
+#                    (--mining-address); without one a validator builds no blocks
+#   validatorAdmins  whose approval this node needs before it co-signs a
+#                    validator change (pinned in lib/pins.sh)
+validator_settings() {
+  local c=$1 title cfg admins mining mode owner
+  title=$(chain_var "$c" TITLE)
+  admins=$(chain_var "$c" VALIDATOR_ADMINS)
+  mining=$(mining_address "$c")
+  [[ -z $admins && -z $mining ]] && return 0
+  if ! cfg=$(existing_chain_config "$c"); then
+    # Only in a dry run: the config above hasn't been written.
+    info "(and in the new $title chain config:${mining:+ miningAddrs [$mining]}${admins:+ validatorAdmins [$admins]})"
+    return 0
+  fi
+  if [[ $cfg != *.json ]]; then
+    warn "$cfg isn't JSON, so metalgo-setup leaves it alone; add${mining:+ \"miningAddrs\": [\"$mining\"]}${admins:+ \"validatorAdmins\"} to it yourself"
+    return 0
+  fi
+  mode=$(stat -c '%a' "$cfg") owner=$(stat -c '%U:%G' "$cfg")
+  # A chain config can hold an RPC password: never shown, even in a dry run.
+  SECRET_CONTENT=1
+  write_file "$cfg" "0$mode" "$owner" < <(
+    # shellcheck disable=SC2086 # the pinned admins are space-separated
+    jq --argjson admins "$(printf '%s\n' $admins | jq -R . | jq -sc 'map(select(. != ""))')" --arg mining "$mining" '
+      (if ($admins | length) > 0 then .validatorAdmins = $admins else . end)
+      | (if $mining != "" then .miningAddrs = [$mining] else . end)' "$cfg"
+  )
+  SECRET_CONTENT=0
+  if ((FILE_CHANGED)); then
+    NODE_CHANGED=1
+    info "$title chain config:${mining:+ fees to $mining}${admins:+; validator admins pinned}"
+  else
+    ok "$title validator settings unchanged"
+  fi
+}
+
+# --- The plugins' working directory ----------------------------------------------------
+# metalgo starts each plugin with no environment (no HOME) in metalgo's own
+# working directory. Before it was fixed, the L1 plugins' embedded btcd took
+# that directory for an old btcd home at start: it deleted ./db there, and
+# moved ./data and ./btcd.conf. Harmless in an empty directory; fatal when
+# it is the data dir, whose ./db is metalgo's database. Plugins built at an
+# older commit can still do it, so the working directory must be safe.
+workdir_guard() {
+  local wd hit=() p safe dropin
+  wd=$(unit_workdir)
+  [[ $wd == "$DATA_DIR" ]] && hit+=("it is metalgo's data dir")
+  for p in db data btcd.conf; do
+    [[ -e $wd/$p ]] && hit+=("it holds $p")
+  done
+  if ((${#hit[@]} == 0)); then
+    ok "working directory $wd is safe for the L1 plugins"
+    return 0
+  fi
+  warn "$UNIT_NAME's working directory, $wd, isn't safe for the L1 plugins: $(
+    IFS=';'
+    printf '%s' "${hit[*]}"
+  ) (older L1 plugins delete ./db and move ./data and ./btcd.conf in it)"
+  if ((REL_PATHS)); then
+    die "$UNIT_NAME's settings use relative paths, so metalgo-setup won't move its working directory. Set WorkingDirectory= to an empty directory yourself (and make those paths absolute), then re-run."
+  fi
+  safe=$DATA_DIR/metalgo-setup-workdir
+  dropin=/etc/systemd/system/$UNIT_NAME.service.d/30-metalgo-setup-workdir.conf
+  log "Working directory for $UNIT_NAME: $safe ($dropin)"
+  ensure_node_dir "$safe" 0750
+  run install -d -m 0755 -o root -g root "$(dirname "$dropin")"
+  write_file "$dropin" 0644 root:root <<EOF
+# $MANAGED_MARK. metalgo's plugins inherit its working directory;
+# older L1 plugins delete ./db and move ./data and ./btcd.conf there, so it
+# is an empty directory of its own, never the data dir. (Every path in this
+# node's settings is absolute, so nothing else moves.)
+[Service]
+WorkingDirectory=$safe
+EOF
+  ((FILE_CHANGED)) && UNIT_FILES_CHANGED=1 NODE_CHANGED=1
+  return 0
+}
+
 # --- track-subnets ------------------------------------------------------------------
 # edit_track_flag NEW < TEXT: TEXT (a unit file or an ExecStart value) with its
 # --track-subnets flag set to NEW (removed if NEW is empty), or the flag

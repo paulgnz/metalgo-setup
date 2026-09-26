@@ -361,6 +361,56 @@ EOF
     check "rejects unknown settings" fails_with "unknown setting 'bogus'" --dry-run
     ;;
 
+  validator-settings)
+    step "fee address and validator admins in the chain config"
+    make_flags_node
+    # A copy of the repo with an admin pinned for BTCVM (the pins ship empty).
+    cp -r /src /tmp/repo
+    ADMIN=P-metal1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqs4d8zd
+    sed -i "s|^btcvm_VALIDATOR_ADMINS=\"\"|btcvm_VALIDATOR_ADMINS=\"$ADMIN\"|" /tmp/repo/lib/pins.sh
+    FEES=bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq # a public example address
+    check "refuses a non-BTCVM fee address" fails_with "isn't a BTCVM address" --chains btcvm --mining-address btcvm=DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L --dry-run
+    check "refuses a chain that isn't here" fails_with "isn't on this node" --mining-address dogevm=DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L
+    /tmp/repo/setup.sh --chains btcvm --mining-address "btcvm=$FEES" 2>&1 | tee -a "$OUT" >/tmp/run.log
+    cfg=/opt/ltcvm/chain-configs/$btcvm_CHAIN_ID/config.json
+    check "miningAddrs set" jq -e --arg a "$FEES" '.miningAddrs == [$a]' "$cfg"
+    check "validatorAdmins from the pins" jq -e --arg a "$ADMIN" '.validatorAdmins == [$a]' "$cfg"
+    check "config still 600, the node user's" owner_mode "$cfg" "ltcvm 600"
+    check "LTCVM's config untouched (no LTCVM fee address given, no LTCVM admins pinned)" \
+      jq -e 'has("miningAddrs") | not' "/opt/ltcvm/chain-configs/$ltcvm_CHAIN_ID/config.json"
+
+    step "changing only the fee address later"
+    : >"$SYSTEMCTL_LOG"
+    FEES2=bc1q9vza2e8x573nczrlzms0wvx3gsqjx7vavgkx0l
+    /tmp/repo/setup.sh --mining-address "btcvm=$FEES2" >/tmp/run2.log 2>&1
+    check "miningAddrs replaced" jq -e --arg a "$FEES2" '.miningAddrs == [$a]' "$cfg"
+    check "other keys kept" jq -e '.dataDir and .validatorAdmins' "$cfg"
+    check "the old config backed up" bash -c "ls /var/backups/metalgo-setup/*$cfg >/dev/null"
+    check "restarted to load it" test "$(restarts metal-mainnet.service)" = 1
+    check "no password in any output" no_secrets_printed
+    ;;
+
+  workdir-guard)
+    step "a node whose working directory is its data dir"
+    make_flags_node
+    unit=/etc/systemd/system/metal-mainnet.service
+    sed -i 's|^WorkingDirectory=.*|WorkingDirectory=/opt/ltcvm/node|' "$unit"
+    mkdir -p /opt/ltcvm/node/db && echo "metalgo's database" >/opt/ltcvm/node/db/000001.sst
+    setup --chains btcvm >/tmp/run.log
+    dropin=/etc/systemd/system/metal-mainnet.service.d/30-metalgo-setup-workdir.conf
+    check "warned about the working directory" has /tmp/run.log "isn't safe for the L1 plugins"
+    check "moved it to an empty directory of its own" has "$dropin" '^WorkingDirectory=/opt/ltcvm/node/metalgo-setup-workdir$'
+    check "that directory exists, the node user's" owner_mode /opt/ltcvm/node/metalgo-setup-workdir "ltcvm 750"
+    check "metalgo's database untouched" test -f /opt/ltcvm/node/db/000001.sst
+    setup --chains btcvm >/tmp/run2.log
+    check "a re-run finds it safe" has /tmp/run2.log "working directory /opt/ltcvm/node/metalgo-setup-workdir is safe"
+
+    step "relative paths: refuses to move the working directory"
+    rm -rf /etc/systemd/system/metal-mainnet.service.d "/opt/ltcvm/plugins/$btcvm_VM_ID"
+    sed -i 's|--log-dir=/opt/ltcvm/logs|--log-dir=logs|' "$unit"
+    check "refuses, and says what to do" fails_with "uses relative paths" --chains btcvm
+    ;;
+
   *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;
 esac
 echo

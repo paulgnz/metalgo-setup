@@ -41,6 +41,10 @@ usage: sudo ./setup.sh [options]          (no options: a short menu)
   --rpc                   give each new L1 a local JSON-RPC (random user and
                           password in its chain config, mode 0600) with
                           txIndex/addrIndex
+  --mining-address CHAIN=ADDRESS
+                          where this node's block fees go once it validates
+                          CHAIN's L1 (its own BTCVM, LTCVM or DogecoinVM
+                          address; repeatable). Needed to build blocks.
   --remove LIST           L1s to remove (their data is kept unless --purge)
   --purge                 with --remove: delete the L1s' data and configs too
   --update                rebuild the L1s already on this node at the current
@@ -103,10 +107,24 @@ load_conf() {
       harden-ssh) HARDEN_SSH=$(yes_value "$file:$n" "$v") ;;
       public-ip) PUBLIC_IP_ARG=$v ;;
       build-from-source) FROM_SOURCE=$(yes_value "$file:$n" "$v") ;;
+      mining-address) set_mining_address "$v" ;;
       *) die "$file:$n: unknown setting '$k'" ;;
     esac
   done <"$file"
 }
+
+# set_mining_address CHAIN=ADDRESS: checks the address is one of CHAIN's.
+set_mining_address() {
+  local c=${1%%=*} a=${1#*=} re
+  [[ $1 == *=* && -n $a ]] || die "--mining-address takes CHAIN=ADDRESS (e.g. btcvm=bc1q...)"
+  c=$(parse_chain_list "$c")
+  [[ -n $c && $c != *" "* ]] || die "--mining-address: name one chain, as CHAIN=ADDRESS"
+  re=$(chain_var "$c" ADDRESS_RE)
+  [[ $a =~ $re ]] || die "--mining-address: '$a' isn't a $(chain_var "$c" TITLE) address; a validator with a bad one builds no blocks"
+  printf -v "MINING_$c" '%s' "$a"
+  MINING_CHAINS+=" $c"
+}
+MINING_CHAINS=''
 
 ARGS=("$@")
 # The config file first, so the command line can override it.
@@ -142,6 +160,7 @@ while (($#)); do
     --unit) need "$1" "${2:-}"; UNIT_ARG=${2%.service}; shift ;;
     --wait) need "$1" "${2:-}"; WAIT_SECS=$2 WAIT_SET=1; shift ;;
     --public-ip) need "$1" "${2:-}"; PUBLIC_IP_ARG=$2; shift ;;
+    --mining-address) need "$1" "${2:-}"; set_mining_address "$2"; shift ;;
     --config) shift ;;
     --rpc) RPC=1 ;;
     --no-restart) RESTART=0 ;;
@@ -440,7 +459,53 @@ status() {
     [[ -n $NODE_ID ]] && boot=$(is_bootstrapped "$(chain_var "$c" CHAIN_ID)")
     info "$title: plugin $plugin${stamp:+ (built at ${stamp:0:12}$([[ $stamp != "$(chain_var "$c" COMMIT)" ]] && echo ', not the current pin: run --update'))}, tracked $tracked, config ${cfg:-none}, bootstrapped ${boot:-?}"
   done
-  if [[ -n $NODE_ID ]] && ((${#installed[@]})); then report_heights "${installed[@]}"; fi
+  if [[ -n $NODE_ID ]] && ((${#installed[@]})); then
+    report_heights "${installed[@]}"
+    validator_report "${installed[@]}"
+  fi
+}
+
+# validator_report CHAIN...: for each L1, whether this node validates it,
+# where its fees go, and how to apply.
+validator_report() {
+  local c title cfg mining reply weight bal vid tool apply=0
+  log "Validating the L1s"
+  for c in "$@"; do
+    title=$(chain_var "$c" TITLE) tool=$(chain_var "$c" L1_TOOL)
+    cfg=$(existing_chain_config "$c" || true)
+    mining=''
+    [[ -n $cfg ]] && mining=$(jq -r '.miningAddrs[0] // empty' "$cfg" 2>/dev/null || true)
+    reply=$(node_call bc/P platform.getCurrentValidators "{\"subnetID\":\"$(chain_var "$c" SUBNET_ID)\",\"nodeIDs\":[\"$NODE_ID\"]}")
+    weight=$(jq -r '.result.validators[0].weight // empty' <<<"$reply" 2>/dev/null || true)
+    if [[ -n $weight ]]; then
+      bal=$(jq -r '.result.validators[0].balance // empty' <<<"$reply" 2>/dev/null || true)
+      vid=$(jq -r '.result.validators[0].validationID // empty' <<<"$reply" 2>/dev/null || true)
+      info "$title: ${BOLD}validator${RESET}, weight $weight${bal:+, $(awk -v b="$bal" 'BEGIN { printf "%.3f", b / 1e9 }') METAL left for the P-Chain fee}${vid:+ (validation $vid)}"
+      if [[ -n $mining ]]; then
+        info "    block fees go to $mining"
+      else
+        warn "$title: this node validates but has no miningAddrs, so it builds no blocks and earns nothing: sudo ./setup.sh --mining-address $c=YOUR_ADDRESS"
+      fi
+    else
+      info "$title: follower (not a validator)${mining:+; fees would go to $mining}"
+      info "    to apply: $tool request -node-uri $NODE_API -owner P-metal1YOUR_ADDRESS > request.json"
+      apply=1
+    fi
+  done
+  if ((apply)); then
+    cat <<EOF
+
+    To validate an L1 and earn its block fees: send its admin the request
+    above (all public: your NodeID, BLS key and proof of possession, and the
+    P-Chain address that owns the validator's METAL balance). The admin sends
+    back registration.json; register it yourself, paying the validator's
+    P-Chain fee balance (about 1.3 METAL a month) with your own P-Chain key:
+        <chain>-l1 register -registration registration.json -key your-p-chain-key.json -balance 5
+    and set where your block fees go (restarts once):
+        sudo ./setup.sh --mining-address CHAIN=YOUR_ADDRESS
+    The tools are in each L1's repo (cmd/btcvm-l1, cmd/ltcvm-l1, cmd/dogevm-l1).
+EOF
+  fi
 }
 
 main() {
@@ -505,6 +570,9 @@ EOF
     if ((${#CHAINS[@]})); then
       apt_install ca-certificates curl git build-essential jq openssl perl
     fi
+    if ((${#CHAINS[@]})) || [[ -n $(installed_chains) ]]; then
+      workdir_guard
+    fi
   else
     fresh_preflight
     fresh_packages
@@ -533,6 +601,16 @@ EOF
       chain_config "$c"
     done
   fi
+  # Validator settings, for the chains being added and any chain named in
+  # --mining-address that's already here.
+  local vs
+  for vs in $(parse_chain_list "${CHAINS[*]:-} $MINING_CHAINS"); do
+    [[ " ${REMOVE[*]:-} " == *" $vs "* ]] && continue
+    if [[ " ${CHAINS[*]:-} " != *" $vs "* && " $(installed_chains) " != *" $vs "* ]]; then
+      die "--mining-address $vs: $(chain_var "$vs" TITLE) isn't on this node; add it with --chains $vs"
+    fi
+    validator_settings "$vs"
+  done
   for c in ${REMOVE[@]+"${REMOVE[@]}"}; do remove_chain "$c"; done
   if ((${#CHAINS[@]} || ${#REMOVE[@]})); then
     local want=()

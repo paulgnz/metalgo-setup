@@ -233,6 +233,51 @@ curl -s -u public:public -H 'content-type: application/json' https://metalbtc.co
 journalctl -u metalgo -f
 ```
 
+## Validating an L1 and earning its fees
+
+A node set up here follows the L1s; it doesn't validate them until the
+L1's admin approves it. Validators take turns building blocks, and each
+block pays its transaction fees to the validator that built it. There is
+no block reward, and fees are small (about 1 sat, litoshi or koinu per
+payment), so for now validating is about securing the chain more than
+income.
+
+**How a node becomes a validator** (proof of authority: the admin approves
+each one). Each L1's manager is the chain itself. The P-Chain adds a
+validator only with a registration the L1's current validators sign, and
+they sign only one the admin approved:
+
+1. **Run a node with the L1** (this installer) and let it sync:
+   `sudo ./setup.sh --status` shows your NodeID.
+2. **Request.** With the L1's tool (`cmd/btcvm-l1`, `cmd/ltcvm-l1`,
+   `cmd/dogevm-l1` in its repo), make a request. It's all public: your
+   NodeID, BLS key and proof of possession, and the P-Chain address that
+   will own the validator's METAL balance. Send it to the admin.
+   ```sh
+   btcvm-l1 request -node-uri http://127.0.0.1:9650 -owner P-metal1... > request.json
+   ```
+3. **Approval.** The admin checks who you are, then approves; the
+   validators co-sign; the admin sends back `registration.json`, valid for an
+   hour.
+4. **Register** it on the P-Chain yourself, prepaying the validator's
+   continuous P-Chain fee (about 1.3 METAL a month) from your own P-Chain key:
+   ```sh
+   btcvm-l1 register -registration registration.json -key my-p-chain-key.json -balance 5
+   ```
+5. **Get paid.** Tell your node where its block fees go (an ordinary BTCVM,
+   LTCVM or Dogecoin address; any wallet for that chain can hold it), then
+   check:
+   ```sh
+   sudo ./setup.sh --mining-address btcvm=bc1q...
+   sudo ./setup.sh --status        # validator: yes, weight, METAL left, fee address
+   ```
+6. **Keep it funded.** When the METAL balance runs out, the P-Chain
+   deactivates the validator. Anyone can top it up:
+   `btcvm-l1 top-up -validation-id ... -key my-p-chain-key.json -balance 5`.
+
+Nothing here needs a special wallet: fees arrive at a normal address, and
+the METAL balance is paid with an ordinary P-Chain key.
+
 ## Update
 
 ```sh

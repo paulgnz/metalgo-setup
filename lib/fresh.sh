@@ -14,6 +14,9 @@ FRESH_PLUGINS=$FRESH_OPT/plugins
 FRESH_CONF_DIR=/etc/metalgo
 FRESH_CONFIG=$FRESH_CONF_DIR/config.json
 FRESH_CHAIN_CONFIGS=$FRESH_DATA/configs/chains
+# metalgo's working directory, which its plugins inherit: kept empty, never
+# the data dir (see workdir_guard in lib/chains.sh).
+FRESH_WORKDIR=$FRESH_DATA/workdir
 FRESH_HTTP_PORT=9650   # localhost only
 FRESH_STAKING_PORT=9651  # public: peers connect here
 
@@ -22,6 +25,7 @@ FRESH_STAKING_PORT=9651  # public: peers connect here
 fresh_layout() {
   UNIT_NAME=$FRESH_UNIT UNIT_USER=$FRESH_USER UNIT_GROUP=$FRESH_USER UNIT_MANAGED=1
   UNIT_EXEC_FILE=/etc/systemd/system/$FRESH_UNIT.service UNIT_EXEC_ARGV0=0 UNIT_KILLMODE=mixed
+  UNIT_WORKDIR=$FRESH_WORKDIR REL_PATHS=0
   NODE_BIN=$FRESH_BIN DATA_DIR=$FRESH_DATA PLUGIN_DIR=$FRESH_PLUGINS CHAIN_CONFIG_DIR=$FRESH_CHAIN_CONFIGS
   CFG_FILE=$FRESH_CONFIG CFG_TYPE=json CFG_SRC=file NETWORK=mainnet
   NODE_API=http://127.0.0.1:$FRESH_HTTP_PORT CURL_TLS=()
@@ -122,7 +126,7 @@ EOF
 fresh_user_and_dirs() {
   log "Service user and directories"
   ensure_user "$FRESH_USER" "$FRESH_DATA"
-  run install -d -m 0750 -o "$FRESH_USER" -g "$FRESH_USER" "$FRESH_DATA" "$FRESH_DATA/logs" "$FRESH_DATA/configs" "$FRESH_DATA/l1"
+  run install -d -m 0750 -o "$FRESH_USER" -g "$FRESH_USER" "$FRESH_DATA" "$FRESH_DATA/logs" "$FRESH_DATA/configs" "$FRESH_DATA/l1" "$FRESH_WORKDIR"
   run install -d -m 0750 -o "$FRESH_USER" -g "$FRESH_USER" "$FRESH_CHAIN_CONFIGS"
   run install -d -m 0755 -o root -g root "$FRESH_CONF_DIR"
 }
@@ -206,7 +210,9 @@ Type=simple
 User=$FRESH_USER
 Group=$FRESH_USER
 Environment=HOME=$FRESH_DATA
-WorkingDirectory=$FRESH_DATA
+# Its own empty directory, never the data dir: plugins inherit it, and the
+# L1 plugins' embedded btcd (before its fix) deleted ./db at start.
+WorkingDirectory=$FRESH_WORKDIR
 ExecStart=$FRESH_BIN --config-file=$FRESH_CONFIG
 Restart=on-failure
 RestartSec=10

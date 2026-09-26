@@ -54,6 +54,8 @@ btcvm_COMMIT=3bb1cf23c2d5e89fc6e7e4cc41f737b9621a19e3
 btcvm_PLUGIN_PKG=./cmd/btcvm-plugin
 btcvm_PUBLIC_RPC=https://metalbtc.com/rpc
 btcvm_PUBLIC_RPC_AUTH=public:public
+btcvm_ADDRESS_RE='^(bc1[02-9ac-hj-np-z]{11,71}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$'
+btcvm_L1_TOOL=btcvm-l1
 
 ltcvm_TITLE=LTCVM
 ltcvm_CHAIN_ID=oUbDoas3uim368iAQamSWWCWU9sXrq854Mtvv4iFSTUYsEBzm
@@ -65,6 +67,8 @@ ltcvm_COMMIT=f8fd3b969ef2c7de4b63feefffddaa9f3147aed3
 ltcvm_PLUGIN_PKG=./cmd/ltcvm-plugin
 ltcvm_PUBLIC_RPC=https://metalltc.com/rpc
 ltcvm_PUBLIC_RPC_AUTH=public:public
+ltcvm_ADDRESS_RE='^(ltc1[02-9ac-hj-np-z]{11,71}|[LM3][1-9A-HJ-NP-Za-km-z]{25,34})$'
+ltcvm_L1_TOOL=ltcvm-l1
 
 dogevm_TITLE=DogecoinVM
 dogevm_CHAIN_ID=2hFCfzdMmfXBxYgvvdL7BYiJAxdejyn4AksMYUM2eM5gN7Xrjy
@@ -76,6 +80,18 @@ dogevm_COMMIT=8e91a6b47ac3e55e724dc9fef63bf5239c55dffb
 dogevm_PLUGIN_PKG=./cmd/dogevm-plugin
 dogevm_PUBLIC_RPC=https://metaldoge.com/rpc
 dogevm_PUBLIC_RPC_AUTH=public:public
+dogevm_ADDRESS_RE='^[DA9][1-9A-HJ-NP-Za-km-z]{25,34}$'
+dogevm_L1_TOOL=dogevm-l1
+
+# --- Validator admins -------------------------------------------------------------
+# The P-Chain addresses whose approval an L1's validators need before they
+# sign a validator change (proof of authority; vm/validator_manager.go in
+# each VM repo). Written into every chain config as "validatorAdmins", so a
+# node registered as a validator co-signs approved changes. Public
+# addresses, space-separated; empty until the L1's admin key exists.
+btcvm_VALIDATOR_ADMINS=""
+ltcvm_VALIDATOR_ADMINS=""
+dogevm_VALIDATOR_ADMINS=""
 
 # --- Sizing (measured), for the preflight warnings ------------------------------
 # metalgo syncing only the P-Chain: ~170-200 MB RAM, ~235 MB database. Each L1
