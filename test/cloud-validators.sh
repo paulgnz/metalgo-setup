@@ -11,6 +11,7 @@
 #              request -> approve (admin) -> register (payer) -> fees
 #   traffic    payments on each L1; every validator builds blocks and is paid
 #   remove     the admin removes the last server; it stops building; a top-up
+#   update     every server to the current code, one at a time
 #   status     metalgo-setup --status on every server
 #   disable    end every test validator; unused METAL returns to the payer
 #
@@ -280,6 +281,19 @@ case $PHASE in
         -uri "$(uri 1)" -balance 0.5 >/dev/null
       ok "$c: topped up server 2 by 0.5 METAL"
     done
+    ;;
+  update)
+    # Every server to the current branch head, one at a time so no L1
+    # loses quorum: the rollout path for nodes that already validate.
+    for n in $(echo "$SERVERS" | tr ' ' '\n' | grep -v '^1$'; echo 1); do
+      log "server $n: setup.sh --update"
+      pin "$n" head "$(admin_p)"
+      "$S" "$n" "cd /root/metalgo-setup && ./setup.sh --update --yes --wait 900" >"$T/update-$n.log" 2>&1 ||
+        { tail -20 "$T/update-$n.log"; fail "server $n: update failed"; }
+      for c in "${CHAINS[@]}"; do wait_for 900 "server $n to bootstrap $c" bootstrapped "$n" "$(chain_id "$c")"; done
+      ok "server $n updated and caught up"
+    done
+    for c in "${CHAINS[@]}"; do pay "$c" 2; ok "$c: blocks flow after the rolling update (height $(height "$c"))"; done
     ;;
   status)
     for n in $SERVERS; do

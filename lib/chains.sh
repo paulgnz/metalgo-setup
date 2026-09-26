@@ -223,8 +223,9 @@ validator_settings() {
 # older commit can still do it, so the working directory must be safe.
 workdir_guard() {
   local wd hit=() p safe dropin
-  wd=$(unit_workdir)
-  [[ $wd == "$DATA_DIR" ]] && hit+=("it is metalgo's data dir")
+  # As systemd will see it: specifiers (%h ...) expanded, symlinks resolved.
+  wd=$(realpath -m -- "$(expand_exec_word "$(unit_workdir)")")
+  [[ $wd == "$(realpath -m -- "$DATA_DIR")" ]] && hit+=("it is metalgo's data dir")
   for p in db data btcd.conf; do
     [[ -e $wd/$p ]] && hit+=("it holds $p")
   done
@@ -471,8 +472,15 @@ remove_chain() {
         warn "not deleting $p: it isn't inside $within"
         continue
       fi
-      [[ -e $p ]] || continue
-      run rm -rf -- "$(realpath -m -- "$p")"
+      [[ -e $p || -L $p ]] || continue
+      # As the node's user, on the path as given (never re-resolved): the
+      # user owns these directories, so swapping in a symlink after the check
+      # above can't make root delete anything the user couldn't already.
+      if [[ $UNIT_USER == root ]]; then
+        run rm -rf -- "$p"
+      else
+        run runuser -u "$UNIT_USER" -- rm -rf -- "$p"
+      fi
       info "deleted $p"
     done
   else
