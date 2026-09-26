@@ -1,0 +1,29 @@
+# Options for setup.sh, read from /etc/metalgo-setup.conf when it exists (or
+# the file given with --config). The names are setup.sh's options without the
+# "--"; options on the command line win. Copy it and keep what you need:
+#
+#   sudo cp metalgo-setup.conf.example /etc/metalgo-setup.conf
+
+# Fresh install only: l1-only (P-Chain only, the light way to follow the L1s)
+# or full (the whole primary network).
+mode = l1-only
+
+# The L1s to add: any of btcvm,ltcvm,dogevm, or all, or none.
+chains = all
+
+# A local JSON-RPC for each new L1 (random password in its chain config).
+rpc = no
+
+# The existing metalgo's systemd service, if setup.sh can't find it itself.
+#unit = metalgo
+
+# Restart metalgo when something changed (no: you restart it yourself).
+restart = yes
+
+# How long to wait for the L1s to bootstrap, in seconds (0: don't wait).
+wait = 900
+
+# Fresh install only.
+harden-ssh = no
+#public-ip = 203.0.113.10
+build-from-source = no

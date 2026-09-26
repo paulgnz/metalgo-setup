@@ -1,0 +1,11 @@
+#!/bin/sh
+# A stand-in for an operator's metalgo in the test containers. Its plugin
+# protocol comes from /etc/fake-metalgo-rpcchainvm (default 43).
+v=43
+[ -r /etc/fake-metalgo-rpcchainvm ] && v=$(cat /etc/fake-metalgo-rpcchainvm)
+if [ "${1:-}" = --version ]; then
+  echo "metalgo/1.13.5 [database=v1.4.5, rpcchainvm=$v, commit=d93bc237d3b4b6f7bb395c8a36b4069a7a222489, go=1.24.11]"
+  exit 0
+fi
+echo "fake metalgo: not a real node" >&2
+exit 1

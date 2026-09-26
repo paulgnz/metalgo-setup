@@ -1,0 +1,54 @@
+#!/bin/bash
+# A stand-in for systemctl in the test containers: reads unit files from the
+# usual places (cat), and records what it's asked to do in
+# /var/log/fake-systemctl.log. "Active" units are files in /run/fake-systemd.
+set -u
+echo "systemctl $*" >>/var/log/fake-systemctl.log
+state=/run/fake-systemd
+mkdir -p "$state"
+quiet=0 prop='' args=()
+while (($#)); do
+  case $1 in
+    --quiet | -q) quiet=1 ;;
+    --value | --no-pager | --full | --) ;;
+    -p) prop=$2; shift ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+cmd=${args[0]:-}
+unit=${args[1]:-}
+unit=${unit%.service}
+dirs=(/etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /lib/systemd/system /usr/lib/systemd/system)
+case $cmd in
+  cat)
+    main=''
+    for d in "${dirs[@]}"; do
+      [[ -f $d/$unit.service ]] && { main=$d/$unit.service; break; }
+    done
+    [[ -n $main ]] || { echo "No files found for $unit.service." >&2; exit 1; }
+    printf '# %s\n' "$main"
+    cat "$main"
+    # Drop-ins, by file name; a name in an earlier directory wins.
+    declare -A seen=()
+    while IFS= read -r f; do
+      b=$(basename "$f")
+      [[ -n ${seen[$b]:-} ]] && continue
+      seen[$b]=1
+      printf '\n# %s\n' "$f"
+      cat "$f"
+    done < <(for d in "${dirs[@]}"; do ls -1 "$d/$unit.service.d/"*.conf 2>/dev/null; done |
+      awk -F/ '{print $NF "\t" $0}' | sort -s -t$'\t' -k1,1 | cut -f2)
+    ;;
+  is-active)
+    if [[ -f $state/$unit ]]; then ((quiet)) || echo active; exit 0; fi
+    ((quiet)) || echo inactive
+    exit 3
+    ;;
+  start | restart) touch "$state/$unit" ;;
+  stop) rm -f "$state/$unit" ;;
+  enable | disable | daemon-reload | try-reload-or-restart) ;;
+  show) [[ $prop == MainPID ]] && echo 0 ;;
+  *) echo "fake systemctl: $cmd not supported" >&2; exit 1 ;;
+esac
+exit 0
