@@ -50,10 +50,12 @@ subnet_id() { jq -r .subnetID "$T/chain-$1.json"; }
 admin_p() { jq -r .pChainAddress "$T/admin.json"; }
 payer_p() { jq -r .pChainAddress "$T/payer.json"; }
 
-# An SSH tunnel to each server's API (localhost-only on the server).
+# An SSH tunnel to each server's API (localhost-only on the server). A dead
+# one (the ssh exited, or its connection dropped) is replaced.
 tunnel() {
   local n=$1
-  curl -s -m 3 "$(uri "$n")/ext/health" >/dev/null 2>&1 && return 0
+  curl -s -m 5 -o /dev/null -w '%{http_code}' "$(uri "$n")/ext/health" 2>/dev/null | grep -qE '^[1-5][0-9][0-9]$' && return 0
+  pkill -f "L $(port "$n"):127.0.0.1:9650" 2>/dev/null || true
   ssh -i "$HOME/.ssh/pulsevm_dev" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes \
     -o UserKnownHostsFile="$T/known_hosts" -o ExitOnForwardFailure=yes -f -N \
     -L "$(port "$n"):127.0.0.1:9650" "root@$(ip "$n")"
@@ -96,9 +98,13 @@ rpc() { # rpc CHAIN METHOD PARAMS: the test L1's JSON-RPC, via server 1
   curl -s -m 20 -u "$1:$(cat "$(rpc_pass_file "$1")")" -H 'content-type: application/json' \
     -d "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"$2\",\"params\":${3:-[]}}" "$(uri 1)/ext/bc/$(chain_id "$1")/rpc"
 }
-height() { rpc "$1" getblockcount | jq -r '.result // 0'; }
+height() {
+  tunnel 1
+  rpc "$1" getblockcount | jq -r '.result // 0'
+}
 
 bootstrapped() {
+  tunnel "$1"
   curl -s -m 10 -X POST -H 'content-type: application/json' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"info.isBootstrapped\",\"params\":{\"chain\":\"$2\"}}" \
     "$(uri "$1")/ext/info" | grep -q '"isBootstrapped":true'
@@ -243,11 +249,14 @@ case $PHASE in
     done
     ;;
   traffic)
-    for c in "${CHAINS[@]}"; do
+    # PAYMENTS (default 40) per L1; ONLY=chain limits it to one.
+    for c in ${ONLY:-${CHAINS[@]}}; do
       log "$c: payments; each validator builds blocks and is paid"
       first=$(($(height "$c") + 1))
-      pay "$c" 40
+      t0=$SECONDS
+      pay "$c" "${PAYMENTS:-40}"
       last=$(height "$c")
+      printf '    %d payments in %d s (%d s each, to a block)\n' "${PAYMENTS:-40}" $((SECONDS - t0)) $(((SECONDS - t0) / ${PAYMENTS:-40})) >&2
       built=(0 0 0 0 0 0 0 0 0 0) # by server number; 0: paid to no server
       for h in $(seq "$first" "$last"); do
         b=$(builder_of "$c" "$h")
@@ -281,6 +290,15 @@ case $PHASE in
         -uri "$(uri 1)" -balance 0.5 >/dev/null
       ok "$c: topped up server 2 by 0.5 METAL"
     done
+    ;;
+  update-one)
+    n=${2:?server number}
+    log "server $n: setup.sh --update"
+    pin "$n" head "$(admin_p)"
+    "$S" "$n" "cd /root/metalgo-setup && ./setup.sh --update --yes --wait 900" >"$T/update-$n.log" 2>&1 ||
+      { tail -20 "$T/update-$n.log"; fail "server $n: update failed"; }
+    for c in "${CHAINS[@]}"; do wait_for 900 "server $n to bootstrap $c" bootstrapped "$n" "$(chain_id "$c")"; done
+    ok "server $n updated and caught up"
     ;;
   update)
     # Every server to the current branch head, one at a time so no L1

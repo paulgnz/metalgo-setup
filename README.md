@@ -65,7 +65,9 @@ Developed by Paul Grey @ [metallicus.com](https://metallicus.com).
 Ubuntu 24.04, x86_64 (a fresh install checks this). Measured today:
 metalgo syncing only the P-Chain uses about 170–200 MB of RAM with a
 ~235 MB database, and each L1 plugin about 150–180 MB of RAM and under 1 GB
-of disk.
+of disk. (On six 4 GB servers validating all three L1s: metalgo ~200 MB,
+the three plugins ~490 MB, ~2.8 GB free. A new node's first P-Chain sync
+briefly takes about 2 GB, until its first restart.)
 
 | Node | CPU | RAM | Disk |
 |---|---|---|---|
