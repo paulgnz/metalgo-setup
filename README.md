@@ -1,8 +1,56 @@
-# metalgo-setup
+<p align="center">
+  <img src="docs/img/btcvm.png" width="96" alt="BTCVM">&nbsp;&nbsp;&nbsp;
+  <img src="docs/img/ltcvm.png" width="96" alt="LTCVM">&nbsp;&nbsp;&nbsp;
+  <img src="docs/img/dogevm.png" width="96" alt="DogecoinVM">
+</p>
 
-One installer for a [Metal Blockchain](https://metalblockchain.org) node on
-Ubuntu 24.04, and for adding Metal's UTXO L1s to it: **BTCVM**, **LTCVM** and
-**DogecoinVM**.
+<h1 align="center">metalgo-setup</h1>
+
+<p align="center">
+  Run Bitcoin, Litecoin and Dogecoin on Metal Blockchain, from one command.
+</p>
+
+<p align="center">
+  <img src="docs/img/metalgo-setup.gif" width="960" alt="sudo ./setup.sh finds your Metal node, builds and verifies the BTCVM, LTCVM and DogecoinVM plugins, and bootstraps all three L1s">
+</p>
+
+**BTCVM**, **LTCVM** and **DogecoinVM** are Metal Blockchain L1s that run
+Bitcoin's, Litecoin's and Dogecoin's own rules (a payment is final once it's
+in a block, typically within a couple of seconds), and hold real BTC, LTC and
+DOGE through a two-way peg with each coin's own chain.
+
+metalgo-setup is the easy way to run them:
+
+- **New to Metal?** On a fresh Ubuntu 24.04 server it sets up a Metal node
+  for you, locked down and ready to go, and adds the L1s you pick.
+- **Already run a Metal node or validator?** It adds the L1s to it and leaves
+  everything else as it is: same binary, staking key, NodeID and settings.
+  One restart, a few seconds.
+
+```sh
+git clone https://github.com/paulgnz/metalgo-setup
+cd metalgo-setup
+sudo ./setup.sh            # a short menu walks you through it
+```
+
+### Why run them
+
+Every node that runs an L1 checks every block for itself and serves the
+chain: more copies, more independence, a stronger network.
+
+**Earning:** there is no block reward on these L1s. The validator that builds
+each block takes its transaction fees, paid in BTC on BTCVM, LTC on LTCVM
+and DOGE on DogecoinVM, all backed by the peg. Today those fees are small
+(wallets pay about 1 sat, litoshi or koinu per payment). And the L1s **don't
+take outside validators yet**: a node you set up now is a *follower*. It
+syncs and serves the chain but builds no blocks, so it earns nothing yet.
+It's ready to be registered as a validator when that opens. (Validating the
+Metal primary network, which earns METAL staking rewards, is separate: see
+`--mode full`.)
+
+Developed by Paul Grey @ [metallicus.com](https://metallicus.com).
+
+## What happens
 
 - On a **fresh server** it installs a Metal node: the pinned metalgo, running
   as its own user under a hardened systemd unit, with a firewall and
@@ -11,14 +59,6 @@ Ubuntu 24.04, and for adding Metal's UTXO L1s to it: **BTCVM**, **LTCVM** and
   validator, it adds the L1s and changes nothing else about the node: same
   binary, staking key, NodeID and settings, apart from the list of subnets it
   tracks.
-
-```sh
-git clone https://github.com/MetalBlockchain/metalgo-setup
-cd metalgo-setup
-sudo ./setup.sh            # a short menu
-```
-
-Developed by Paul Grey @ [metallicus.com](https://metallicus.com).
 
 ## Requirements
 
