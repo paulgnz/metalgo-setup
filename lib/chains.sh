@@ -202,6 +202,30 @@ mining_address() {
   printf '%s' "${!v:-}"
 }
 
+# check_policy CHAIN CFG < CONFIG: the installed plugin must accept CONFIG's
+# validator settings (addresses, duplicates, the threshold's type) as it
+# reads them, whenever it has any, pinned now or kept from before: the
+# plugin must be one that enforces them.
+check_policy() {
+  local c=$1 cfg=$2 title plugin config out
+  title=$(chain_var "$c" TITLE)
+  plugin=$PLUGIN_DIR/$(chain_var "$c" VM_ID)
+  config=$(cat)
+  jq -e 'has("validatorAdmins") or has("validatorAdminThreshold")' <<<"$config" >/dev/null 2>&1 || return 0
+  if ((DRY_RUN)); then
+    info "(stops unless the new $title plugin accepts these validator settings: $plugin -check-config)"
+    return 0
+  fi
+  ((TEST_ONLY)) && return 0
+  [[ -x $plugin ]] || return 0
+  if ! out=$(runuser -u "$UNIT_USER" -- "$plugin" -check-config - <<<"$config" 2>&1); then
+    if grep -q "unknown shorthand flag" <<<"$out"; then
+      die "the $title plugin in $PLUGIN_DIR predates the validator manager, so it can't enforce validatorAdmins; pin a newer commit"
+    fi
+    die "$cfg: the $title plugin refuses these validator settings: $(tail -1 <<<"$out")"
+  fi
+}
+
 # validator_settings CHAIN: puts two settings into the chain's config, as
 # asked or pinned, keeping everything else in it:
 #   miningAddrs      where this node's block fees go once it validates the L1
@@ -225,7 +249,15 @@ validator_settings() {
       die "lib/pins.sh: ${c}_VALIDATOR_ADMIN_THRESHOLD=1 with $n admins lets any one of them change the validators; the plugin refuses it too"
     fi
   fi
-  [[ -z $admins && -z $mining ]] && return 0
+  if [[ -z $admins && -z $mining ]]; then
+    # Nothing to write, but admin settings already in the config must still
+    # be ones the plugin accepts, or the chain won't start.
+    if ! ((DRY_RUN || TEST_ONLY)) && cfg=$(existing_chain_config "$c") && [[ $cfg == *.json ]]; then
+      # shellcheck disable=SC2094 # check_policy only reads it
+      check_policy "$c" "$cfg" <"$cfg"
+    fi
+    return 0
+  fi
   if ! cfg=$(existing_chain_config "$c"); then
     # Only in a dry run: the config above hasn't been written.
     info "(and in the new $title chain config:${mining:+ miningAddrs [$mining]}${admins:+ validatorAdmins [$admins]})"
@@ -256,24 +288,7 @@ validator_settings() {
       elif $n > 1 and $t < 2 then "threshold 1 with \($n) admins"
       else "ok" end' <<<"$merged")
   [[ $policy == ok ]] || die "$cfg would get validatorAdminThreshold $policy, which the $title plugin refuses; fix lib/pins.sh or the config"
-  # And as the plugin itself reads it (addresses, duplicates, the threshold's
-  # type), whenever the config has admin settings: the pinned plugin must be
-  # one that enforces them.
-  local plugin policy_set=0
-  plugin=$PLUGIN_DIR/$(chain_var "$c" VM_ID)
-  # Pinned now or kept from before: either way the plugin must accept it.
-  jq -e 'has("validatorAdmins") or has("validatorAdminThreshold")' <<<"$merged" >/dev/null && policy_set=1
-  if ((policy_set && DRY_RUN)); then
-    info "(stops unless the new $title plugin accepts these validator settings: $plugin -check-config)"
-  elif ((policy_set)) && ! ((TEST_ONLY)) && [[ -x $plugin ]]; then
-    local out
-    if ! out=$(runuser -u "$UNIT_USER" -- "$plugin" -check-config - <<<"$merged" 2>&1); then
-      if grep -q "unknown shorthand flag" <<<"$out"; then
-        die "the $title plugin in $PLUGIN_DIR predates the validator manager, so it can't enforce validatorAdmins; pin a newer commit"
-      fi
-      die "$cfg: the $title plugin refuses these validator settings: $(tail -1 <<<"$out")"
-    fi
-  fi
+  check_policy "$c" "$cfg" <<<"$merged"
   write_file "$cfg" "0$mode" "$owner" <<<"$merged"
   SECRET_CONTENT=0
   if ((FILE_CHANGED)); then
