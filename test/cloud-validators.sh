@@ -181,26 +181,45 @@ settling() {
   fail "the validator set never settled"
 }
 
+# submit CHAIN PROPOSAL OUT: server 1 collects the validators' signatures on
+# an approved proposal (a registration comes back; a weight change is issued,
+# paid by the payer). Retry this, never a new proposal: validators that
+# signed hold that exact change until it's on the P-Chain or expires.
+submit() {
+  # shellcheck disable=SC2046
+  "$T/$1-l1" submit $(L1 "$1") -node-uri "$(uri 1)" -proposal "$2" -payer-key "$T/payer.json" \
+    -rpc-user "$1" -rpc-pass-file "$(rpc_pass_file "$1")" >"$3"
+}
+# propose CHAIN PROPOSAL REQUEST ADMIN...: a registration proposal for REQUEST,
+# approved by each admin (indexes into ADMIN_KEYS) in turn.
+propose() {
+  local c=$1 prop=$2 req=$3 first=$4 a
+  shift 4
+  # shellcheck disable=SC2046
+  "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$req" -key "${ADMIN_KEYS[$first]}" -yes >"$prop"
+  for a in "$@"; do
+    # shellcheck disable=SC2046
+    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$prop" -key "${ADMIN_KEYS[$a]}" -yes >"$prop.next" &&
+      mv "$prop.next" "$prop"
+  done
+}
+# submit_register CHAIN SERVER: submits server N's proposal and registers it.
+submit_register() {
+  local c=$1 n=$2
+  submit "$c" "$T/proposal-$c-$n.json" "$T/registration-$c-$n.json" || return 1
+  "$T/$c-l1" register -registration "$T/registration-$c-$n.json" -key "$T/payer.json" -uri "$(uri "$n")" -balance 1 \
+    >"$T/registered-$c-$n.json.tmp" && mv "$T/registered-$c-$n.json.tmp" "$T/registered-$c-$n.json"
+}
+
 join_one() { # CHAIN SERVER
-  local c=$1 n=$2 reg=$T/registration-$1-$2.json
+  local c=$1 n=$2
   [[ -f $T/registered-$c-$n.json ]] && { ok "$c: server $n already registered"; return; }
   "$T/$c-l1" request -node-uri "$(uri "$n")" -owner "$(payer_p)" >"$T/request-$c-$n.json"
-  # shellcheck disable=SC2046
-  # shellcheck disable=SC2329 # run through settling below
-  approve_register() {
-    # Every admin: while the set is small, a new validator holds a third
-    # or more of the weight, which needs them all.
-    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$n.json" -key "${ADMIN_KEYS[0]}" -yes \
-      >"$T/proposal-$c-$n.json" || return 1
-    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$n.json" -key "${ADMIN_KEYS[1]}" -yes \
-      >"$T/proposal-$c-$n.json.2" || return 1
-    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$n.json.2" -key "${ADMIN_KEYS[2]}" -yes \
-      -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >"$reg" || return 1
-    "$T/$c-l1" register -registration "$reg" -key "$T/payer.json" -uri "$(uri "$n")" -balance 1 >"$T/registered-$c-$n.json.tmp" &&
-      mv "$T/registered-$c-$n.json.tmp" "$T/registered-$c-$n.json"
-  }
-  settling approve_register
-  ok "$c: server $n ($(jq -r .nodeID "$reg")) registered: $(jq -r .txID "$T/registered-$c-$n.json")"
+  # Every admin: while the set is small, a new validator holds a third or
+  # more of the weight, which needs them all.
+  propose "$c" "$T/proposal-$c-$n.json" "$T/request-$c-$n.json" 0 1 2
+  settling submit_register "$c" "$n"
+  ok "$c: server $n ($(jq -r .nodeID "$T/registration-$c-$n.json")) registered: $(jq -r .txID "$T/registered-$c-$n.json")"
 }
 
 case $PHASE in
@@ -296,14 +315,12 @@ case $PHASE in
       log "$c: the admin removes server $LAST"
       vid=$(jq -r .validationID "$T/registration-$c-$LAST.json")
       # shellcheck disable=SC2046
-      # shellcheck disable=SC2329 # run through settling below
-      remove_last() {
-        "$T/$c-l1" remove $(L1 "$c") -node-uri "$(uri 1)" -validation-id "$vid" -key "${ADMIN_KEYS[0]}" -yes \
-          >"$T/remove-$c-$LAST.json" || return 1
-        "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/remove-$c-$LAST.json" -key "${ADMIN_KEYS[2]}" -yes \
-          -payer-key "$T/payer.json" -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >/dev/null
-      }
-      settling remove_last
+      "$T/$c-l1" remove $(L1 "$c") -node-uri "$(uri 1)" -validation-id "$vid" -key "${ADMIN_KEYS[0]}" -yes \
+        >"$T/remove-$c-$LAST.json"
+      # shellcheck disable=SC2046
+      "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/remove-$c-$LAST.json" -key "${ADMIN_KEYS[2]}" -yes \
+        >"$T/remove-$c-$LAST.json.next" && mv "$T/remove-$c-$LAST.json.next" "$T/remove-$c-$LAST.json"
+      settling submit "$c" "$T/remove-$c-$LAST.json" "$T/removed-$c-$LAST.json"
       nid=$(jq -r .nodeID "$T/registration-$c-$LAST.json")
       wait_for 120 "$nid off $c's validators" bash -c "! '$T/$c-l1' validators $(L1 "$c") -node-uri '$(uri 1)' | jq -e --arg n '$nid' 'map(.nodeID) | index(\$n)' >/dev/null"
       ok "$c: server $LAST removed"
@@ -357,18 +374,9 @@ case $PHASE in
       grep -q "it needs $ADMIN_THRESHOLD" "$T/mofn-$c.err" || { cat "$T/mofn-$c.err"; fail "$c: unexpected refusal"; }
       ok "$c: refused: $(grep -o "approved by 1 of this L1's admins; it needs $ADMIN_THRESHOLD" "$T/mofn-$c.err" | head -1)"
       # Server LAST as the sixth validator (1/6 each): two admins suffice.
-      # shellcheck disable=SC2046
-      "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$LAST.json" -key "${ADMIN_KEYS[0]}" -yes \
-        >"$T/proposal-$c-$LAST.json"
-      # shellcheck disable=SC2329 # run through settling below
-      two_admins() {
-        # shellcheck disable=SC2046
-        "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$LAST.json" -key "${ADMIN_KEYS[1]}" -yes \
-          -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >"$T/registration-$c-$LAST.json" || return 1
-        "$T/$c-l1" register -registration "$T/registration-$c-$LAST.json" -key "$T/payer.json" -uri "$(uri "$LAST")" -balance 1 \
-          >"$T/registered-$c-$LAST.json"
-      }
-      settling two_admins
+      rm -f "$T/registered-$c-$LAST.json"
+      propose "$c" "$T/proposal-$c-$LAST.json" "$T/request-$c-$LAST.json" 0 1
+      settling submit_register "$c" "$LAST"
       ok "$c: server $LAST registered with two admins' approval: $(jq -r .txID "$T/registered-$c-$LAST.json")"
     done
     for c in "${CHAINS[@]}"; do
@@ -388,7 +396,8 @@ case $PHASE in
       log "$c: disable the test validators (unused METAL back to the payer)"
       validators "$c" | jq -r '.[].validationID' | while read -r vid; do
         [[ -n $vid ]] || continue
-        "$T/$c-l1" disable -validation-id "$vid" -key "$T/payer.json" -uri "$(uri 1)" >/dev/null && ok "$c: disabled $vid"
+        # -last: a throwaway test L1 may lose its last validator.
+        "$T/$c-l1" disable -validation-id "$vid" -key "$T/payer.json" -uri "$(uri 1)" -last >/dev/null && ok "$c: disabled $vid"
       done
     done
     ;;

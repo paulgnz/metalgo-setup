@@ -49,6 +49,8 @@ usage: sudo ./setup.sh [options]          (no options: a short menu)
   --purge                 with --remove: delete the L1s' data and configs too
   --update                rebuild the L1s already on this node at the current
                           pins (and, on a node metalgo-setup installed, metalgo)
+  --allow-downgrade       install an L1 plugin older than the one metalgo-setup
+                          installed here (refused otherwise)
   --unit NAME             the existing metalgo's systemd service (default: found)
   --no-restart            change files but don't restart metalgo (restart it
                           yourself when it suits: systemctl restart UNIT)
@@ -74,7 +76,7 @@ DEFAULT_CONF=/etc/metalgo-setup.conf
 
 # --- Options: defaults < config file < command line ------------------------------------
 MODE='' CHAINS_OPT='' REMOVE_OPT='' RPC=0 UNIT_ARG='' RESTART=1 WAIT_SECS=900 WAIT_SET=0
-HARDEN_SSH=0 PUBLIC_IP_ARG='' FROM_SOURCE=0 PURGE=0 FORCE=0 YES=0 STATUS=0 UPDATE=0
+HARDEN_SSH=0 PUBLIC_IP_ARG='' FROM_SOURCE=0 PURGE=0 FORCE=0 YES=0 STATUS=0 UPDATE=0 ALLOW_DOWNGRADE=0
 CONF_FILE='' MENU=0
 
 yes_value() {
@@ -166,6 +168,7 @@ while (($#)); do
     --no-restart) RESTART=0 ;;
     --purge) PURGE=1 ;;
     --force) FORCE=1 ;;
+    --allow-downgrade) ALLOW_DOWNGRADE=1 ;;
     --update) UPDATE=1 ;;
     --harden-ssh) HARDEN_SSH=1 ;;
     --build-from-source) FROM_SOURCE=1 ;;

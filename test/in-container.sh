@@ -391,6 +391,14 @@ EOF
     check "miningAddrs replaced" jq -e --arg a "$FEES2" '.miningAddrs == [$a]' "$cfg"
     check "other keys kept" jq -e '.dataDir and .validatorAdmins' "$cfg"
     check "the old config backed up" bash -c "ls /var/backups/metalgo-setup/*$cfg >/dev/null"
+
+    step "new admins, no pinned threshold: the old threshold goes (the plugin's default applies)"
+    ADMIN3=P-metal1qgpqyqszqgpqyqszqgpqyqszqgpqyqszrtw3dd
+    sed -i "s|^btcvm_VALIDATOR_ADMINS=.*|btcvm_VALIDATOR_ADMINS=\"$ADMIN $ADMIN2 $ADMIN3\"|" /tmp/repo/lib/pins.sh
+    sed -i 's|^btcvm_VALIDATOR_ADMIN_THRESHOLD=.*|btcvm_VALIDATOR_ADMIN_THRESHOLD=""|' /tmp/repo/lib/pins.sh
+    /tmp/repo/setup.sh --mining-address "btcvm=$FEES2" >/tmp/run3.log 2>&1
+    check "three admins" jq -e '.validatorAdmins | length == 3' "$cfg"
+    check "no stale threshold" jq -e 'has("validatorAdminThreshold") | not' "$cfg"
     check "restarted to load it" test "$(restarts metal-mainnet.service)" = 1
     check "no password in any output" no_secrets_printed
     ;;

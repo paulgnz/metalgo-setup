@@ -37,6 +37,22 @@ build_tools() {
 # The plugin file's SHA-256, or empty.
 file_sha() { [[ -f $1 ]] && sha256sum "$1" | cut -d' ' -f1; }
 
+# downgrade_guard CHAIN SRC STAMP COMMIT: refuses to install a pin older than
+# the build metalgo-setup installed here last (an old metalgo-setup, or old
+# pins, run again): an older plugin can lack what the newer one relied on,
+# such as the validator manager enforcing the admins in its chain config.
+downgrade_guard() {
+  local c=$1 src=$2 stamp=$3 commit=$4 prev title
+  [[ -f $stamp ]] || return 0
+  prev=$(cut -d' ' -f1 "$stamp")
+  [[ -n $prev && $prev != "$commit" ]] || return 0
+  ((DRY_RUN)) && { info "(stops if $commit is older than the installed $prev)"; return 0; }
+  build_env git -C "$src" merge-base --is-ancestor "$commit" "$prev" 2>/dev/null || return 0
+  title=$(chain_var "$c" TITLE)
+  ((ALLOW_DOWNGRADE)) || die "$title: the pinned $commit is older than the $prev metalgo-setup installed here. Update metalgo-setup (git pull), or pass --allow-downgrade if you mean to go back."
+  warn "$title: going back from $prev to the older $commit (--allow-downgrade)"
+}
+
 # install_plugin CHAIN: builds the plugin at its pin as the build user, checks
 # the VM ID, and puts it in the plugin directory atomically, if different.
 install_plugin() {
@@ -59,6 +75,7 @@ install_plugin() {
     mv -f "$out/plugin.test" "$out/plugin"
   else
     checkout_pinned "$src" "$repo" "$branch" "$commit"
+    downgrade_guard "$c" "$src" "$stamp" "$commit"
     as_build mkdir -p "$out"
     # The plugin's file name must be the VM ID the L1 was created with.
     if ((DRY_RUN)); then
@@ -215,9 +232,19 @@ validator_settings() {
   merged=$(jq --argjson admins "$(printf '%s\n' $admins | jq -R . | jq -sc 'map(select(. != ""))')" \
     --arg mining "$mining" --arg threshold "$threshold" '
       (if ($admins | length) > 0 then .validatorAdmins = $admins else . end)
-      | (if $threshold != "" then .validatorAdminThreshold = ($threshold | tonumber) else . end)
+      | (if $threshold != "" then .validatorAdminThreshold = ($threshold | tonumber)
+         elif ($admins | length) > 0 then del(.validatorAdminThreshold) else . end)
       | (if $mining != "" then .miningAddrs = [$mining] else . end)' "$cfg") &&
     [[ -n $merged ]] || die "$cfg isn't valid JSON; fix it, then re-run"
+  # The admin policy as the plugin will read it: one it refuses stops the
+  # chain at start, so it never gets written.
+  local policy
+  policy=$(jq -r '(.validatorAdmins // [] | length) as $n | (.validatorAdminThreshold // null) as $t
+    | if $t == null then "ok"
+      elif ($t | type) != "number" or $t < 1 or $t > $n or $t != ($t | floor) then "threshold \($t) with \($n) admins"
+      elif $n > 1 and $t < 2 then "threshold 1 with \($n) admins"
+      else "ok" end' <<<"$merged")
+  [[ $policy == ok ]] || die "$cfg would get validatorAdminThreshold $policy, which the $title plugin refuses; fix lib/pins.sh or the config"
   write_file "$cfg" "0$mode" "$owner" <<<"$merged"
   SECRET_CONTENT=0
   if ((FILE_CHANGED)); then

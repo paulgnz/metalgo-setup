@@ -197,6 +197,7 @@ use `--no-restart` and later `sudo systemctl restart <unit>`.
 --remove LIST         L1s to remove (data kept unless --purge)
 --purge               with --remove: delete their data and configs too
 --update              rebuild the L1s on this node at the current pins
+--allow-downgrade     install an L1 plugin older than the one installed here
 --unit NAME           the existing metalgo service (default: found)
 --no-restart          change files, but leave the restart to you
 --wait SECONDS        how long to wait for bootstrapping (default 900; 0: don't)

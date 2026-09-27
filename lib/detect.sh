@@ -265,21 +265,44 @@ relative_paths() {
   echo 0
 }
 
-# chain_config_relative_paths: the chain configs whose paths (keys ending
-# in dir, file or path, e.g. an L1's "dataDir") are relative, and so follow
-# the plugin's working directory; one per line. A config that isn't JSON
-# can't be checked, so it counts too.
+# chain_config_relative_paths: the chain configs whose meaning could follow
+# the plugin's working directory; one per line, with why. A value counts as
+# a path when its key ends in dir, directory, file, path, key, cert,
+# profile, conf or config (Coreth's keystore-directory, btcd's rpcKey,
+# configFile ...), or it holds a slash. It is safe only if absolute:
+# metalgo doesn't expand $VARIABLES in chain configs. An L1 config (BTCVM,
+# LTCVM, DogecoinVM) needs an absolute dataDir, whose default is relative;
+# a btcd configFile (INI) is read too. A config that isn't JSON can't be
+# checked, so it counts.
 chain_config_relative_paths() {
-  local f
+  local f id ini c ours
   for f in "$CHAIN_CONFIG_DIR"/*/config.*; do
     [[ -f $f ]] || continue
     if ! jq -e . "$f" >/dev/null 2>&1; then
       echo "$f (not JSON, so metalgo-setup can't check it)"
       continue
     fi
-    jq -r '[paths(strings) as $p | select(($p[-1] | tostring) | test("(dir|file|path)$"; "i"))
-            | getpath($p)] | .[] | select(test("^(/|\\$)") | not) | select(. != "")' "$f" 2>/dev/null |
-      grep -q . && echo "$f"
+    if jq -r '[paths(strings) as $p | {k: ($p[-1] | tostring), v: getpath($p)}
+        | select((.k | test("(dir|directory|file|path|key|cert|profile|conf|config)$"; "i")) or (.v | test("/")))
+        | .v | select(. != "" and (startswith("/") | not))] | .[]' "$f" 2>/dev/null | grep -q .; then
+      echo "$f (a relative path)"
+      continue
+    fi
+    id=$(basename "$(dirname "$f")") ours=0
+    for c in btcvm ltcvm dogevm; do [[ $id == "$(chain_var "$c" CHAIN_ID)" ]] && ours=1; done
+    if ((ours)) && ! jq -e '.dataDir | type == "string" and startswith("/")' "$f" >/dev/null 2>&1; then
+      echo "$f (no absolute dataDir: the default follows the working directory)"
+      continue
+    fi
+    ini=$(jq -r '.configFile // empty' "$f" 2>/dev/null)
+    if [[ -n $ini ]]; then
+      if [[ $ini != /* || ! -r $ini ]]; then
+        echo "$f (its configFile $ini is relative or unreadable)"
+      elif grep -Ei '^[[:space:]]*[a-z]*(dir|directory|file|path|key|cert|profile|conf|config)[[:space:]]*=' "$ini" |
+        sed -E 's/^[^=]*=[[:space:]]*//' | grep -vE '^(/|$)' | grep -q .; then
+        echo "$f (its configFile $ini has a relative path)"
+      fi
+    fi
   done
   return 0
 }
