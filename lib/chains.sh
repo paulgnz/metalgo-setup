@@ -179,12 +179,21 @@ mining_address() {
 #   miningAddrs      where this node's block fees go once it validates the L1
 #                    (--mining-address); without one a validator builds no blocks
 #   validatorAdmins  whose approval this node needs before it co-signs a
-#                    validator change (pinned in lib/pins.sh)
+#                    validator change, and how many of them
+#                    (validatorAdminThreshold); both pinned in lib/pins.sh
 validator_settings() {
-  local c=$1 title cfg admins mining mode owner
+  local c=$1 title cfg admins threshold mining mode owner n
   title=$(chain_var "$c" TITLE)
   admins=$(chain_var "$c" VALIDATOR_ADMINS)
+  threshold=$(chain_var "$c" VALIDATOR_ADMIN_THRESHOLD)
   mining=$(mining_address "$c")
+  if [[ -n $threshold ]]; then
+    # shellcheck disable=SC2086 # the pinned admins are space-separated
+    n=$(printf '%s\n' $admins | grep -c .)
+    if ! [[ $threshold =~ ^[1-9][0-9]*$ ]] || ((threshold > n)); then
+      die "lib/pins.sh: ${c}_VALIDATOR_ADMIN_THRESHOLD=$threshold must be between 1 and its $n admins"
+    fi
+  fi
   [[ -z $admins && -z $mining ]] && return 0
   if ! cfg=$(existing_chain_config "$c"); then
     # Only in a dry run: the config above hasn't been written.
@@ -200,8 +209,10 @@ validator_settings() {
   SECRET_CONTENT=1
   local merged
   # shellcheck disable=SC2086 # the pinned admins are space-separated
-  merged=$(jq --argjson admins "$(printf '%s\n' $admins | jq -R . | jq -sc 'map(select(. != ""))')" --arg mining "$mining" '
+  merged=$(jq --argjson admins "$(printf '%s\n' $admins | jq -R . | jq -sc 'map(select(. != ""))')" \
+    --arg mining "$mining" --arg threshold "$threshold" '
       (if ($admins | length) > 0 then .validatorAdmins = $admins else . end)
+      | (if $threshold != "" then .validatorAdminThreshold = ($threshold | tonumber) else . end)
       | (if $mining != "" then .miningAddrs = [$mining] else . end)' "$cfg") &&
     [[ -n $merged ]] || die "$cfg isn't valid JSON; fix it, then re-run"
   write_file "$cfg" "0$mode" "$owner" <<<"$merged"

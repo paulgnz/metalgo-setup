@@ -94,6 +94,12 @@ dogevm_L1_TOOL=dogevm-l1
 btcvm_VALIDATOR_ADMINS=""
 ltcvm_VALIDATOR_ADMINS=""
 dogevm_VALIDATOR_ADMINS=""
+# How many of those admins must approve a change ("validatorAdminThreshold").
+# Empty: the VM's default, a majority of them. Never 1 with several admins,
+# or one stolen admin key could change the validator set.
+btcvm_VALIDATOR_ADMIN_THRESHOLD=""
+ltcvm_VALIDATOR_ADMIN_THRESHOLD=""
+dogevm_VALIDATOR_ADMIN_THRESHOLD=""
 
 # --- Sizing (measured), for the preflight warnings ------------------------------
 # metalgo syncing only the P-Chain: ~170-200 MB RAM, ~235 MB database. Each L1

@@ -7,22 +7,28 @@
 #   create     make the three test L1s, validated by server 1 (costs METAL)
 #   old        server 1 runs today's deployed plugins for them; blocks flow
 #   upgrade    server 1 moves to the validator-manager code and validatorAdmins
+#              (three admins, any two approve: validatorAdminThreshold 2)
 #   join       servers 2-N install the L1s with metalgo-setup and apply:
-#              request -> approve (admin) -> register (payer) -> fees
+#              request -> approve (admin 1) -> approve (admin 2, submits)
+#              -> register (payer) -> fees
 #   traffic    payments on each L1; every validator builds blocks and is paid
-#   remove     the admin removes the last server; it stops building; a top-up
+#   remove     admins 1 and 3 remove the last server; it stops building; a top-up
 #   update     every server to the current code, one at a time
+#   update-one N   just server N
+#   mofn       one admin alone can't add a validator, two can: the last
+#              server rejoins each L1 that way
 #   status     metalgo-setup --status on every server
 #   disable    end every test validator; unused METAL returns to the payer
 #
 # $T holds, on this machine only: hosts ("N IP REGION" lines), ssh.sh,
-# payer.json and admin.json (P-Chain keys), keys/ (reserve and fee keys),
+# payer.json and admin.json, admin2.json, admin3.json (P-Chain keys; the
+# admin keys are made here if missing), keys/ (reserve and fee keys),
 # genesis-CHAIN.json, the built *-l1 and chain CLIs, and the state written
 # here. The servers only ever get public data and their own chain configs.
 set -euo pipefail
 
 T=${T:-$HOME/.metalgo-setup-test}
-PHASE=${1:?phase: create|old|upgrade|join|traffic|remove|status|disable}
+PHASE=${1:?phase: create|old|upgrade|join|traffic|remove|update|update-one|mofn|status|disable}
 CHAINS=(btcvm ltcvm dogevm)
 SERVERS=$(awk '{print $1}' "$T/hosts" | sort -n | tr '\n' ' ')
 LAST=$(awk '{print $1}' "$T/hosts" | sort -n | tail -1)
@@ -47,7 +53,16 @@ port() { echo $((19650 + $1)); }
 uri() { echo "http://127.0.0.1:$(port "$1")"; }
 chain_id() { jq -r .chainID "$T/chain-$1.json"; }
 subnet_id() { jq -r .subnetID "$T/chain-$1.json"; }
-admin_p() { jq -r .pChainAddress "$T/admin.json"; }
+ADMIN_KEYS=("$T/admin.json" "$T/admin2.json" "$T/admin3.json")
+ADMIN_THRESHOLD=2
+# The admins' P-Chain addresses, space-separated, making any missing key.
+admins_p() {
+  local k
+  for k in "${ADMIN_KEYS[@]}"; do
+    [[ -s $k ]] || { (umask 077 && "$T/btcvm-l1" key -out "$k" >/dev/null); }
+    jq -r .pChainAddress "$k"
+  done | tr '\n' ' ' | sed 's/ $//'
+}
 payer_p() { jq -r .pChainAddress "$T/payer.json"; }
 
 # An SSH tunnel to each server's API (localhost-only on the server). A dead
@@ -75,7 +90,8 @@ pin() {
       -e "s|^${c}_COMMIT=.*|${c}_COMMIT=$commit|"
       -e "s|^${c}_CHAIN_ID=.*|${c}_CHAIN_ID=$(chain_id "$c")|"
       -e "s|^${c}_SUBNET_ID=.*|${c}_SUBNET_ID=$(subnet_id "$c")|"
-      -e "s|^${c}_VALIDATOR_ADMINS=.*|${c}_VALIDATOR_ADMINS=\"$admins\"|")
+      -e "s|^${c}_VALIDATOR_ADMINS=.*|${c}_VALIDATOR_ADMINS=\"$admins\"|"
+      -e "s|^${c}_VALIDATOR_ADMIN_THRESHOLD=.*|${c}_VALIDATOR_ADMIN_THRESHOLD=\"$([[ -n $admins ]] && echo $ADMIN_THRESHOLD)\"|")
   done
   "$S" "$n" "cd /root/metalgo-setup && git checkout -q lib/pins.sh 2>/dev/null; [ -f lib/pins.sh.orig ] || cp lib/pins.sh lib/pins.sh.orig; cp lib/pins.sh.orig lib/pins.sh && sed -i $(printf '%q ' "${sed[@]}") lib/pins.sh"
 }
@@ -172,8 +188,10 @@ join_one() { # CHAIN SERVER
   # shellcheck disable=SC2046
   # shellcheck disable=SC2329 # run through settling below
   approve_register() {
-    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$n.json" \
-      -key "$T/admin.json" -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >"$reg" || return 1
+    "$T/$c-l1" approve $(L1 "$c") -request "$T/request-$c-$n.json" -key "${ADMIN_KEYS[0]}" \
+      >"$T/proposal-$c-$n.json" || return 1
+    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$n.json" -key "${ADMIN_KEYS[1]}" \
+      -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >"$reg" || return 1
     "$T/$c-l1" register -registration "$reg" -key "$T/payer.json" -uri "$(uri "$n")" -balance 1 >"$T/registered-$c-$n.json.tmp" &&
       mv "$T/registered-$c-$n.json.tmp" "$T/registered-$c-$n.json"
   }
@@ -209,10 +227,11 @@ case $PHASE in
     ;;
   upgrade)
     log "Server 1: validator-manager code and validatorAdmins, as the live validators will get them"
-    pin 1 head "$(admin_p)"
+    pin 1 head "$(admins_p)"
     "$S" 1 "cd /root/metalgo-setup && ./setup.sh --update --yes --wait 900" | tail -25
     for c in "${CHAINS[@]}"; do
-      "$S" 1 "grep -h 'validator manager ready' /var/lib/metalgo/logs/*.log | grep $(chain_id "$c") | tail -1" | grep -qE '"validatorAdmins": ?1' ||
+      "$S" 1 "grep -h 'validator manager ready' /var/lib/metalgo/logs/*.log | grep $(chain_id "$c") | tail -1" |
+        grep -qE "\"validatorAdmins\": ?${#ADMIN_KEYS[@]}, \"validatorAdminThreshold\": ?$ADMIN_THRESHOLD" ||
         fail "$c: server 1 didn't load its validatorAdmins"
       pay "$c" 3
       ok "$c: upgraded, validatorAdmins loaded, blocks still flow (height $(height "$c"))"
@@ -223,7 +242,7 @@ case $PHASE in
     for n in $SERVERS; do
       ((n == 1)) && continue
       (
-        pin "$n" head "$(admin_p)"
+        pin "$n" head "$(admins_p)"
         # shellcheck disable=SC2046
         "$S" "$n" "cd /root/metalgo-setup && ./setup.sh --chains all --rpc $(mining_flags "$n") --yes --wait 900" >"$T/join-install-$n.log" 2>&1
       ) &
@@ -273,8 +292,14 @@ case $PHASE in
       log "$c: the admin removes server $LAST"
       vid=$(jq -r .validationID "$T/registration-$c-$LAST.json")
       # shellcheck disable=SC2046
-      settling "$T/$c-l1" remove $(L1 "$c") -node-uri "$(uri 1)" -validation-id "$vid" -key "$T/admin.json" \
-        -payer-key "$T/payer.json" -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >/dev/null
+      # shellcheck disable=SC2329 # run through settling below
+      remove_last() {
+        "$T/$c-l1" remove $(L1 "$c") -node-uri "$(uri 1)" -validation-id "$vid" -key "${ADMIN_KEYS[0]}" \
+          >"$T/remove-$c-$LAST.json" || return 1
+        "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/remove-$c-$LAST.json" -key "${ADMIN_KEYS[2]}" \
+          -payer-key "$T/payer.json" -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >/dev/null
+      }
+      settling remove_last
       nid=$(jq -r .nodeID "$T/registration-$c-$LAST.json")
       wait_for 120 "$nid off $c's validators" bash -c "! '$T/$c-l1' validators $(L1 "$c") -node-uri '$(uri 1)' | jq -e --arg n '$nid' 'map(.nodeID) | index(\$n)' >/dev/null"
       ok "$c: server $LAST removed"
@@ -294,7 +319,7 @@ case $PHASE in
   update-one)
     n=${2:?server number}
     log "server $n: setup.sh --update"
-    pin "$n" head "$(admin_p)"
+    pin "$n" head "$(admins_p)"
     "$S" "$n" "cd /root/metalgo-setup && ./setup.sh --update --yes --wait 900" >"$T/update-$n.log" 2>&1 ||
       { tail -20 "$T/update-$n.log"; fail "server $n: update failed"; }
     for c in "${CHAINS[@]}"; do wait_for 900 "server $n to bootstrap $c" bootstrapped "$n" "$(chain_id "$c")"; done
@@ -305,13 +330,36 @@ case $PHASE in
     # loses quorum: the rollout path for nodes that already validate.
     for n in $(echo "$SERVERS" | tr ' ' '\n' | grep -v '^1$'; echo 1); do
       log "server $n: setup.sh --update"
-      pin "$n" head "$(admin_p)"
+      pin "$n" head "$(admins_p)"
       "$S" "$n" "cd /root/metalgo-setup && ./setup.sh --update --yes --wait 900" >"$T/update-$n.log" 2>&1 ||
         { tail -20 "$T/update-$n.log"; fail "server $n: update failed"; }
       for c in "${CHAINS[@]}"; do wait_for 900 "server $n to bootstrap $c" bootstrapped "$n" "$(chain_id "$c")"; done
       ok "server $n updated and caught up"
     done
     for c in "${CHAINS[@]}"; do pay "$c" 2; ok "$c: blocks flow after the rolling update (height $(height "$c"))"; done
+    ;;
+  mofn)
+    # After update: every validator runs 2-of-3. The last server (removed by
+    # the remove phase) rejoins each L1, first with one approval (refused),
+    # then with two.
+    for c in "${CHAINS[@]}"; do
+      log "$c: server $LAST applies again; one admin can't approve it alone"
+      "$T/$c-l1" request -node-uri "$(uri "$LAST")" -owner "$(payer_p)" >"$T/request-$c-$LAST.json"
+      # shellcheck disable=SC2046
+      if "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$LAST.json" -key "${ADMIN_KEYS[0]}" \
+        -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >/dev/null 2>"$T/mofn-$c.err"; then
+        fail "$c: one admin alone got a registration signed"
+      fi
+      grep -q "it needs $ADMIN_THRESHOLD" "$T/mofn-$c.err" || { cat "$T/mofn-$c.err"; fail "$c: unexpected refusal"; }
+      ok "$c: refused: $(grep -o "approved by 1 of this L1's admins; it needs $ADMIN_THRESHOLD" "$T/mofn-$c.err" | head -1)"
+      rm -f "$T/registered-$c-$LAST.json"
+      join_one "$c" "$LAST"
+    done
+    for c in "${CHAINS[@]}"; do
+      nid=$(jq -r .nodeID "$T/registration-$c-$LAST.json")
+      wait_for 120 "$nid on $c's validators" bash -c "'$T/$c-l1' validators $(L1 "$c") -node-uri '$(uri 1)' | jq -e --arg n '$nid' 'map(.nodeID) | index(\$n)' >/dev/null"
+      ok "$c: server $LAST is a validator again, approved by two admins"
+    done
     ;;
   status)
     for n in $SERVERS; do

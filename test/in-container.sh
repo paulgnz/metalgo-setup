@@ -36,7 +36,7 @@ setup() { /src/setup.sh "$@" 2>&1 | tee -a "$OUT"; return "${PIPESTATUS[0]}"; }
 fails_with() {
   local text=$1 out
   shift
-  if out=$(/src/setup.sh "$@" 2>&1); then
+  if out=$("${SETUP:-/src/setup.sh}" "$@" 2>&1); then
     echo "$out"
     return 1
   fi
@@ -367,14 +367,19 @@ EOF
     # A copy of the repo with an admin pinned for BTCVM (the pins ship empty).
     cp -r /src /tmp/repo
     ADMIN=P-metal1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqs4d8zd
-    sed -i "s|^btcvm_VALIDATOR_ADMINS=\"\"|btcvm_VALIDATOR_ADMINS=\"$ADMIN\"|" /tmp/repo/lib/pins.sh
+    ADMIN2=P-metal1qyqszqgpqyqszqgpqyqszqgpqyqszqgpvn0ql6
+    sed -i "s|^btcvm_VALIDATOR_ADMINS=\"\"|btcvm_VALIDATOR_ADMINS=\"$ADMIN $ADMIN2\"|" /tmp/repo/lib/pins.sh
+    sed -i 's|^btcvm_VALIDATOR_ADMIN_THRESHOLD=""|btcvm_VALIDATOR_ADMIN_THRESHOLD="3"|' /tmp/repo/lib/pins.sh
+    SETUP=/tmp/repo/setup.sh check "refuses a threshold above the admins" fails_with "must be between 1 and its 2 admins" --chains btcvm --dry-run
+    sed -i 's|^btcvm_VALIDATOR_ADMIN_THRESHOLD="3"|btcvm_VALIDATOR_ADMIN_THRESHOLD="2"|' /tmp/repo/lib/pins.sh
     FEES=bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq # a public example address
     check "refuses a non-BTCVM fee address" fails_with "isn't a BTCVM address" --chains btcvm --mining-address btcvm=DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L --dry-run
     check "refuses a chain that isn't here" fails_with "isn't on this node" --mining-address dogevm=DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L
     /tmp/repo/setup.sh --chains btcvm --mining-address "btcvm=$FEES" 2>&1 | tee -a "$OUT" >/tmp/run.log
     cfg=/opt/ltcvm/chain-configs/$btcvm_CHAIN_ID/config.json
     check "miningAddrs set" jq -e --arg a "$FEES" '.miningAddrs == [$a]' "$cfg"
-    check "validatorAdmins from the pins" jq -e --arg a "$ADMIN" '.validatorAdmins == [$a]' "$cfg"
+    check "validatorAdmins from the pins" jq -e --arg a "$ADMIN" --arg b "$ADMIN2" '.validatorAdmins == [$a, $b]' "$cfg"
+    check "validatorAdminThreshold from the pins" jq -e '.validatorAdminThreshold == 2' "$cfg"
     check "config still 600, the node user's" owner_mode "$cfg" "ltcvm 600"
     check "LTCVM's config untouched (no LTCVM fee address given, no LTCVM admins pinned)" \
       jq -e 'has("miningAddrs") | not' "/opt/ltcvm/chain-configs/$ltcvm_CHAIN_ID/config.json"
