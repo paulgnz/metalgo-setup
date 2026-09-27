@@ -198,9 +198,14 @@ checkout_pinned() {
     local head
     head=$(build_env git -C "$dir" rev-parse HEAD)
     [[ $head == "$commit" ]] || die "$repo: checked out $head, expected the pinned $commit"
-    # The pin must be on the branch the L1's validators follow.
-    build_env git -C "$dir" merge-base --is-ancestor "$commit" "refs/remotes/origin/$ref" 2>/dev/null ||
-      die "$repo: the pinned $commit is not on $ref"
+    # The pin must be the tag, or on the branch the L1's validators follow.
+    if build_env git -C "$dir" show-ref --verify --quiet "refs/tags/$ref"; then
+      [[ $(build_env git -C "$dir" rev-parse "refs/tags/$ref^{commit}") == "$commit" ]] ||
+        die "$repo: tag $ref is not the pinned $commit"
+    else
+      build_env git -C "$dir" merge-base --is-ancestor "$commit" "refs/remotes/origin/$ref" 2>/dev/null ||
+        die "$repo: the pinned $commit is not on $ref"
+    fi
   fi
 }
 

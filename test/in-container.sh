@@ -49,9 +49,9 @@ snapshot() {
   for p in /etc/systemd/system /lib/systemd/system /etc/metalgo /etc/node /opt /var/lib /home /etc/apt/apt.conf.d; do
     [[ -e $p ]] && paths+=("$p")
   done
-  find "${paths[@]}" \( -path /var/lib/dpkg -o -path /var/lib/apt -o -path /var/lib/systemd -o -path /var/lib/pam \) -prune -o -type f -print0 |
+  find "${paths[@]}" \( -path /var/lib/dpkg -o -path /var/lib/apt -o -path /var/lib/systemd -o -path /var/lib/pam -o -path '*/.cache' \) -prune -o -type f -print0 |
     sort -z | xargs -0 -r sha256sum
-  find "${paths[@]}" \( -path /var/lib/dpkg -o -path /var/lib/apt -o -path /var/lib/systemd -o -path /var/lib/pam \) -prune -o -printf '%p %U %G %m %T@\n' | sort
+  find "${paths[@]}" \( -path /var/lib/dpkg -o -path /var/lib/apt -o -path /var/lib/systemd -o -path /var/lib/pam -o -path '*/.cache' \) -prune -o -printf '%p %U %G %m %T@\n' | sort
   getent passwd | sort
 }
 same_as() {
@@ -91,6 +91,9 @@ OTHER_SUB=2oYMBNV4eNHyqk2fjjV5nVQLDbtmNJzq5s3qs3Lo6ftnC6FByM # another L1 the op
 # A node like the LTCVM server's: flags only, its own user, tracking LTCVM.
 make_flags_node() {
   useradd --system --create-home --home-dir /home/ltcvm --shell /usr/sbin/nologin ltcvm
+  # Under emulation (Rosetta), running a binary as a user makes ~/.cache:
+  # made now, so it doesn't look like a change setup.sh made.
+  install -d -o ltcvm -g ltcvm /home/ltcvm/.cache
   install -d -o ltcvm -g ltcvm /home/ltcvm/metalgo/build /opt/ltcvm/node /opt/ltcvm/logs /opt/ltcvm/plugins /opt/ltcvm/chain-configs
   install -m 0755 /usr/local/lib/fake-metalgo /home/ltcvm/metalgo/build/metalgo
   # An LTCVM plugin and chain config from an earlier install.
@@ -237,7 +240,10 @@ case $SCENARIO in
 
     step "--remove dogevm keeps its data"
     touch /opt/ltcvm/node/l1/dogevm/data/blocks
-    setup --remove dogevm >/tmp/rm.log
+    # In test mode there's no node API, so no NodeID: whether it validates
+    # can't be told, and that refuses without --force.
+    check "refuses when it can't tell whether the node validates" fails_with "can't tell whether it validates" --remove dogevm
+    setup --remove dogevm --force >/tmp/rm.log
     check "DogecoinVM untracked, the others kept" test "$(tracked_in_unit "$unit")" = "$LTC_SUB,$BTC_SUB"
     check "DogecoinVM plugin gone" test ! -e "/opt/ltcvm/plugins/$dogevm_VM_ID"
     check "... and backed up" bash -c "ls /var/backups/metalgo-setup/*/opt/ltcvm/plugins/$dogevm_VM_ID >/dev/null"
@@ -245,7 +251,7 @@ case $SCENARIO in
     check "DogecoinVM config kept" test -f "/opt/ltcvm/chain-configs/$dogevm_CHAIN_ID/config.json"
 
     step "--remove btcvm --purge deletes its data"
-    setup --remove btcvm --purge >/tmp/purge.log
+    setup --remove btcvm --purge --force >/tmp/purge.log
     check "only LTCVM tracked" test "$(tracked_in_unit "$unit")" = "$LTC_SUB"
     check "BTCVM data deleted" test ! -e /opt/ltcvm/node/l1/btcvm
     check "BTCVM config deleted" test ! -e "/opt/ltcvm/chain-configs/$btcvm_CHAIN_ID"
@@ -307,12 +313,15 @@ EOF
     check "plugin dir: under it" has /tmp/dry.log "plugin dir: */home/metal/.metalgo/plugins$"
     check "chain config dir: configs/chains" has /tmp/dry.log "chain config dir: */home/metal/.metalgo/configs/chains$"
     setup --chains ltcvm >/tmp/run.log
+    check "a stopped node stays stopped" lacks "$SYSTEMCTL_LOG" "systemctl start metal.service"
+    check "... and says how to start it" has /tmp/run.log "leaving it stopped"
+    setup --start >/tmp/run-start.log
     dropin=/etc/systemd/system/metal.service.d/20-metalgo-setup-exec.conf
     check "a packaged unit: ExecStart overridden in a drop-in" has "$dropin" "^ExecStart=/usr/local/bin/metalgo --track-subnets=$LTC_SUB$"
     check "the packaged unit untouched" lacks /lib/systemd/system/metal.service track-subnets
     check "plugin dir made" test -f "/home/metal/.metalgo/plugins/$ltcvm_VM_ID"
     check "chain config, the node user's" owner_mode "/home/metal/.metalgo/configs/chains/$ltcvm_CHAIN_ID/config.json" "metal 600"
-    check "started (it wasn't running)" has "$SYSTEMCTL_LOG" "systemctl start metal.service"
+    check "started with --start" has "$SYSTEMCTL_LOG" "systemctl start metal.service"
     setup --chains btcvm >/dev/null
     check "second L1 added to the drop-in" has "$dropin" "--track-subnets=$LTC_SUB,$BTC_SUB$"
     ;;
@@ -392,6 +401,9 @@ EOF
     check "other keys kept" jq -e '.dataDir and .validatorAdmins' "$cfg"
     check "the old config backed up" bash -c "ls /var/backups/metalgo-setup/*$cfg >/dev/null"
 
+    check "restarted to load it" test "$(restarts metal-mainnet.service)" = 1
+    check "no password in any output" no_secrets_printed
+
     step "new admins, no pinned threshold: the old threshold goes (the plugin's default applies)"
     ADMIN3=P-metal1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrjxn82n
     sed -i "s|^btcvm_VALIDATOR_ADMINS=.*|btcvm_VALIDATOR_ADMINS=\"$ADMIN $ADMIN2 $ADMIN3\"|" /tmp/repo/lib/pins.sh
@@ -399,8 +411,6 @@ EOF
     /tmp/repo/setup.sh --mining-address "btcvm=$FEES2" >/tmp/run3.log 2>&1
     check "three admins" jq -e '.validatorAdmins | length == 3' "$cfg"
     check "no stale threshold" jq -e 'has("validatorAdminThreshold") | not' "$cfg"
-    check "restarted to load it" test "$(restarts metal-mainnet.service)" = 1
-    check "no password in any output" no_secrets_printed
     ;;
 
   workdir-guard)
@@ -428,6 +438,25 @@ EOF
     cc=/opt/ltcvm/chain-configs/$ltcvm_CHAIN_ID/config.json
     jq '.dataDir = "chaindata"' "$cc" >/tmp/cc.json && cp /tmp/cc.json "$cc"
     check "refuses, naming the chain config" fails_with "chain configs with relative paths" --chains btcvm
+    ;;
+
+  own-metalgo-unit)
+    step "an operator's own metalgo.service, given metalgo-setup's drop-ins, stays theirs"
+    make_flags_node
+    systemctl stop metal-mainnet
+    # Named as metalgo-setup names its own, without KillMode (so it gets the
+    # stop drop-in, which carries metalgo-setup's mark).
+    sed '/^KillMode=/d; /^TimeoutStopSec=/d' /etc/systemd/system/metal-mainnet.service >/etc/systemd/system/metalgo.service
+    rm /etc/systemd/system/metal-mainnet.service
+    systemctl start metalgo
+    setup --chains btcvm --yes >/tmp/run.log
+    check "the stop drop-in was added" bash -c "ls /etc/systemd/system/metalgo.service.d/*metalgo-setup* >/dev/null"
+    unit_before=$(sha256sum /etc/systemd/system/metalgo.service) # with its --track-subnets
+    setup --update --yes >/tmp/run2.log
+    check "not taken for metalgo-setup's own install" lacks /tmp/run2.log "A node metalgo-setup installed"
+    check "no fresh config written" test ! -e /etc/metalgo/config.json
+    check "the operator's unit untouched" test "$(sha256sum /etc/systemd/system/metalgo.service)" = "$unit_before"
+    check "still its own data dir" grep -q -- "--data-dir=/opt/ltcvm/node" /etc/systemd/system/metalgo.service
     ;;
 
   *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;

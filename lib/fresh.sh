@@ -157,6 +157,17 @@ fresh_config() {
   log "metalgo config ($FRESH_CONFIG)"
   local tracked=$1 partial=false mode=$MODE track_line=''
   [[ -n $tracked ]] && track_line=$',\n  "track-subnets": "'"$tracked"'"'
+  # A mode from the options file doesn't switch a node already installed
+  # (a validator in full mode made l1-only would stop validating): only
+  # --mode on the command line does.
+  if ((MODE_FROM_FILE)) && [[ -r $FRESH_CONFIG ]]; then
+    local installed=full
+    jq -e '."partial-sync-primary-network" == true' "$FRESH_CONFIG" >/dev/null 2>&1 && installed=l1-only
+    if [[ $mode != "$installed" ]]; then
+      warn "keeping this node's mode, $installed (mode = $mode in the options file applies to fresh installs; --mode $mode changes it)"
+      mode=$installed
+    fi
+  fi
   if [[ -z $mode ]]; then
     mode=l1-only
     [[ -r $FRESH_CONFIG ]] && ! jq -e '."partial-sync-primary-network" == true' "$FRESH_CONFIG" >/dev/null 2>&1 && mode=full

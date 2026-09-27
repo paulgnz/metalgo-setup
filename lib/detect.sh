@@ -91,8 +91,9 @@ read_unit() {
   text=$(systemctl cat -- "$unit.service" 2>/dev/null) || die "no systemd service called $unit (systemctl cat $unit.service failed)"
   UNIT_NAME=$unit UNIT_EXEC='' UNIT_EXEC_FILE='' UNIT_USER='' UNIT_GROUP='' UNIT_WORKDIR=''
   UNIT_KILLMODE='' UNIT_TIMEOUT_STOP='' UNIT_DYNAMIC_USER='' UNIT_FILES=() UNIT_ENV_ASSIGN=() UNIT_ENV_FILES=()
+  # Managed: the mark in the main unit file itself. metalgo-setup's drop-ins
+  # carry it too, on units it only added to: those aren't its own.
   UNIT_MANAGED=0
-  [[ $text == *"$MANAGED_MARK"* ]] && UNIT_MANAGED=1
   while IFS= read -r line || [[ -n $line ]]; do
     # "systemctl cat" heads each file with "# /path/to/file".
     if [[ -z $joined && $line =~ ^\#\ (/[^[:space:]]+)$ ]]; then
@@ -100,6 +101,9 @@ read_unit() {
       UNIT_FILES+=("$file")
       section=''
       continue
+    fi
+    if ((${#UNIT_FILES[@]} == 1)) && [[ $line == *"$MANAGED_MARK"* ]]; then
+      UNIT_MANAGED=1
     fi
     # A trailing backslash continues the line.
     if [[ $line == *\\ ]]; then
@@ -435,15 +439,21 @@ resolve_node() {
   parse_exec
   load_config_file
 
-  v=$(setting data-dir '$HOME/.metalgo')
-  DATA_DIR=$(abs_path "$(expand_env "$v")")
+  # A path that is relative once expanded (HOME=data, $D/x with D relative)
+  # follows the working directory: noted, so it's never moved.
+  REL_EXPANDED=0
+  v=$(expand_env "$(setting data-dir '$HOME/.metalgo')")
+  [[ $v == /* ]] || REL_EXPANDED=1
+  DATA_DIR=$(abs_path "$v")
   [[ $DATA_DIR == /* && $DATA_DIR != / ]] || die "can't tell $UNIT_NAME.service's data dir (data-dir resolves to '$DATA_DIR')"
   EXPAND_DATA_DIR=$DATA_DIR
 
-  v=$(setting plugin-dir '$METALGO_DATA_DIR/plugins')
-  PLUGIN_DIR=$(abs_path "$(expand_env "$v")")
-  v=$(setting chain-config-dir '$METALGO_DATA_DIR/configs/chains')
-  CHAIN_CONFIG_DIR=$(abs_path "$(expand_env "$v")")
+  v=$(expand_env "$(setting plugin-dir '$METALGO_DATA_DIR/plugins')")
+  [[ $v == /* ]] || REL_EXPANDED=1
+  PLUGIN_DIR=$(abs_path "$v")
+  v=$(expand_env "$(setting chain-config-dir '$METALGO_DATA_DIR/configs/chains')")
+  [[ $v == /* ]] || REL_EXPANDED=1
+  CHAIN_CONFIG_DIR=$(abs_path "$v")
   if [[ -n $(setting chain-config-content '') ]]; then
     die "$UNIT_NAME.service passes chain configs as base64 (--chain-config-content), so metalgo ignores the chain config directory; metalgo-setup can't add chain configs to it"
   fi
@@ -457,6 +467,7 @@ resolve_node() {
   for s in ${v//,/ }; do TRACKED+=("$s"); done
 
   REL_PATHS=$(relative_paths)
+  ((REL_EXPANDED)) && REL_PATHS=1
 
   PARTIAL_SYNC=0
   is_true "$(setting partial-sync-primary-network false)" && PARTIAL_SYNC=1

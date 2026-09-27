@@ -33,6 +33,8 @@ CHAINS=(btcvm ltcvm dogevm)
 SERVERS=$(awk '{print $1}' "$T/hosts" | sort -n | tr '\n' ' ')
 LAST=$(awk '{print $1}' "$T/hosts" | sort -n | tail -1)
 S=$T/ssh.sh
+# The tools write files (a proposal they submit) where they run: in $T.
+cd "$T"
 
 # Per-chain names (functions, not associative arrays: bash 3.2 on macOS).
 repo_of() { case $1 in btcvm) echo btcvm ;; ltcvm) echo ltc-vm ;; dogevm) echo dogecoin-vm ;; esac; }
@@ -213,7 +215,7 @@ propose() {
 submit_register() {
   local c=$1 n=$2
   submit "$c" "$T/proposal-$c-$n.json" "$T/registration-$c-$n.json" || return 1
-  "$T/$c-l1" register -registration "$T/registration-$c-$n.json" -key "$T/payer.json" -uri "$(uri "$n")" -balance 1 \
+  "$T/$c-l1" register -yes -registration "$T/registration-$c-$n.json" -key "$T/payer.json" -uri "$(uri "$n")" -balance 1 \
     >"$T/registered-$c-$n.json.tmp" && mv "$T/registered-$c-$n.json.tmp" "$T/registered-$c-$n.json"
 }
 

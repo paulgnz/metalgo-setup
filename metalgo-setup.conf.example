@@ -6,7 +6,7 @@
 
 # Fresh install only: l1-only (P-Chain only, the light way to follow the L1s)
 # or full (the whole primary network).
-mode = l1-only
+# mode = l1-only    (a fresh install only; --mode on the command line changes an installed node)
 
 # The L1s to add: any of btcvm,ltcvm,dogevm, or all, or none.
 chains = all

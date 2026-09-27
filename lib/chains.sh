@@ -56,8 +56,17 @@ downgrade_guard() {
     warn "$title: replacing $dest, which metalgo-setup didn't build (--allow-downgrade)"
     return 0
   fi
-  prev=$(cut -d' ' -f1 "$stamp")
-  [[ -n $prev && $prev != "$commit" ]] || return 0
+  local prev_sha
+  read -r prev prev_sha <"$stamp" || true
+  # The stamp must describe the plugin in place: an unreadable stamp, or a
+  # file changed since (someone else's build), is as good as none.
+  if [[ ! $prev =~ ^[0-9a-f]{40}$ || ( -e $dest && $(file_sha "$dest") != "${prev_sha:-}" ) ]]; then
+    ((DRY_RUN)) && { info "(stops unless --allow-downgrade: the $title plugin in place isn't the build metalgo-setup recorded)"; return 0; }
+    ((ALLOW_DOWNGRADE)) || die "$title: $dest isn't the build metalgo-setup recorded, so it can't tell whether the pinned $commit is newer. Pass --allow-downgrade to replace it with the pinned build."
+    warn "$title: replacing $dest, which isn't the recorded build (--allow-downgrade)"
+    return 0
+  fi
+  [[ $prev != "$commit" ]] || return 0
   ((DRY_RUN)) && { info "(stops unless $commit is newer than the installed $prev)"; return 0; }
   build_env git -C "$src" merge-base --is-ancestor "$prev" "$commit" 2>/dev/null && return 0
   ((ALLOW_DOWNGRADE)) || die "$title: the pinned $commit isn't newer than the $prev metalgo-setup installed here (older, or on another line). Update metalgo-setup (git pull), or pass --allow-downgrade if you mean it."
@@ -81,9 +90,11 @@ install_plugin() {
   if ((TEST_ONLY)); then
     # A stand-in whose content names the pin, so a new pin is a change.
     run install -d -m 0750 -o "$BUILD_USER" -g "$BUILD_USER" "$out"
-    printf '#!/bin/sh\n# metalgo-setup TEST STUB for %s at %s: not a real plugin\nexit 1\n' "$c" "$commit" >"$out/plugin.test"
-    chown "$BUILD_USER:$BUILD_USER" "$out/plugin.test"
-    mv -f "$out/plugin.test" "$out/plugin"
+    if ! ((DRY_RUN)); then
+      printf '#!/bin/sh\n# metalgo-setup TEST STUB for %s at %s: not a real plugin\nexit 1\n' "$c" "$commit" >"$out/plugin.test"
+      chown "$BUILD_USER:$BUILD_USER" "$out/plugin.test"
+      mv -f "$out/plugin.test" "$out/plugin"
+    fi
   else
     checkout_pinned "$src" "$repo" "$branch" "$commit"
     downgrade_guard "$c" "$src" "$stamp" "$commit" "$dest"
@@ -119,7 +130,8 @@ install_plugin() {
     ok "installed $dest"
   fi
   if ! ((DRY_RUN)); then
-    printf '%s %s\n' "$commit" "$(file_sha "$dest")" >"$stamp"
+    # Atomically: a torn stamp would make the guard above refuse.
+    printf '%s %s\n' "$commit" "$(file_sha "$dest")" >"$stamp.tmp" && mv -f "$stamp.tmp" "$stamp"
   fi
 }
 
@@ -218,7 +230,7 @@ check_policy() {
   fi
   ((TEST_ONLY)) && return 0
   [[ -x $plugin ]] || return 0
-  if ! out=$(runuser -u "$UNIT_USER" -- "$plugin" -check-config - <<<"$config" 2>&1); then
+  if ! out=$(cd / && runuser -u "$UNIT_USER" -- "$plugin" -check-config - <<<"$config" 2>&1); then
     if grep -q "unknown shorthand flag" <<<"$out"; then
       die "the $title plugin in $PLUGIN_DIR predates the validator manager, so it can't enforce validatorAdmins; pin a newer commit"
     fi
@@ -241,7 +253,7 @@ validator_settings() {
   mining=$(mining_address "$c")
   if [[ -n $threshold ]]; then
     # shellcheck disable=SC2086 # the pinned admins are space-separated
-    n=$(printf '%s\n' $admins | grep -c .)
+    n=$(printf '%s\n' $admins | grep -c . || true)
     if ! [[ $threshold =~ ^[1-9][0-9]*$ ]] || ((threshold > n)); then
       die "lib/pins.sh: ${c}_VALIDATOR_ADMIN_THRESHOLD=$threshold must be between 1 and its $n admins"
     fi
@@ -417,7 +429,10 @@ write_tracked() {
           ([keys[] | select(ascii_downcase == "track-subnets")] | last // "track-subnets") as $k
           | if $new == "" then del(.[$k]) else .[$k] = $new end' "$CFG_FILE") &&
         [[ -n $edited ]] || die "$CFG_FILE isn't valid JSON; fix it, then re-run"
+      # A node config can hold keys (staking-*-content): never shown.
+      SECRET_CONTENT=1
       write_file "$CFG_FILE" "0$mode" "$owner" <<<"$edited"
+      SECRET_CONTENT=0
       ;;
     flag | flag-add)
       local file=$UNIT_EXEC_FILE add=0
@@ -432,7 +447,9 @@ write_tracked() {
           ADD_FLAG=$add edit_track_flag "$new" <"$file" || exit 1
           printf x
         ) || die "can't edit --track-subnets in $file"
+        SECRET_CONTENT=1
         write_file "$file" "0$mode" "$owner" < <(printf '%s' "${edited%x}")
+        SECRET_CONTENT=0
       else
         # A packaged unit: override its ExecStart with a drop-in instead.
         local dropin=/etc/systemd/system/$UNIT_NAME.service.d/20-metalgo-setup-exec.conf exec
@@ -488,7 +505,15 @@ set_tracked() {
       IFS=,
       printf '%s' "${TRACKED[*]:-}"
     )
-    [[ $got == "$new" ]] || die "after the change, $UNIT_NAME would track '$got', not '$new'; the files changed are backed up in $BACKUP_DIR"
+    if [[ $got != "$new" ]]; then
+      # Put back what was there, so the bad edit never takes effect.
+      local f
+      if [[ -n $BACKUP_DIR && -d $BACKUP_DIR ]]; then
+        while IFS= read -r f; do cp -a "$f" "${f#"$BACKUP_DIR"}"; done < <(find "$BACKUP_DIR" -type f)
+        systemctl daemon-reload
+      fi
+      die "after the change, $UNIT_NAME would track '$got', not '$new'; the changed files are restored (copies in $BACKUP_DIR)"
+    fi
   else
     TRACKED=(${want[@]+"${want[@]}"})
   fi
@@ -528,8 +553,10 @@ remove_chain() {
   local c=$1 title id vmid cfg state data='' logs=''
   title=$(chain_var "$c" TITLE) id=$(chain_var "$c" CHAIN_ID) vmid=$(chain_var "$c" VM_ID)
   log "Removing $title"
-  if [[ -n ${NODE_ID:-} && $(validates "$NODE_ID" "$(chain_var "$c" SUBNET_ID)") == true ]] && ! ((FORCE)); then
-    die "$NODE_ID is a validator of the $title L1; removing the chain would stop it validating. Not removing (--force overrides)."
+  if ! ((FORCE)); then
+    [[ -n ${NODE_ID:-} ]] || die "can't read this node's NodeID (is it running?), so can't tell whether it validates the $title L1. Not removing (--force overrides)."
+    [[ $(validates "$NODE_ID" "$(chain_var "$c" SUBNET_ID)") == true ]] &&
+      die "$NODE_ID is a validator of the $title L1; removing the chain would stop it validating. Not removing (--force overrides)."
   fi
   if [[ -f $PLUGIN_DIR/$vmid ]]; then
     remove_path "$PLUGIN_DIR/$vmid"

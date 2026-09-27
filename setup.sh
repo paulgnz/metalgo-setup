@@ -54,6 +54,8 @@ usage: sudo ./setup.sh [options]          (no options: a short menu)
   --unit NAME             the existing metalgo's systemd service (default: found)
   --no-restart            change files but don't restart metalgo (restart it
                           yourself when it suits: systemctl restart UNIT)
+  --start                 start an existing metalgo service that is stopped
+                          (a stopped one is otherwise left stopped)
   --wait SECONDS          how long to wait for the L1s to bootstrap (default
                           900; 0: don't wait)
   --harden-ssh            fresh install: key logins only (only if a key exists)
@@ -76,7 +78,7 @@ DEFAULT_CONF=/etc/metalgo-setup.conf
 
 # --- Options: defaults < config file < command line ------------------------------------
 MODE='' CHAINS_OPT='' REMOVE_OPT='' RPC=0 UNIT_ARG='' RESTART=1 WAIT_SECS=900 WAIT_SET=0
-HARDEN_SSH=0 PUBLIC_IP_ARG='' FROM_SOURCE=0 PURGE=0 FORCE=0 YES=0 STATUS=0 UPDATE=0 ALLOW_DOWNGRADE=0
+HARDEN_SSH=0 PUBLIC_IP_ARG='' FROM_SOURCE=0 PURGE=0 FORCE=0 YES=0 STATUS=0 UPDATE=0 ALLOW_DOWNGRADE=0 START=0 MODE_FROM_FILE=0
 CONF_FILE='' MENU=0
 
 yes_value() {
@@ -100,7 +102,7 @@ load_conf() {
       die "$file:$n: expected key=value"
     k=${BASH_REMATCH[1]} v=${BASH_REMATCH[2]}
     case $k in
-      mode) MODE=$v ;;
+      mode) MODE=$v MODE_FROM_FILE=1 ;;
       chains) CHAINS_OPT=$v ;;
       rpc) RPC=$(yes_value "$file:$n" "$v") ;;
       unit) UNIT_ARG=$v ;;
@@ -156,7 +158,7 @@ while (($#)); do
     set -- "$opt" "$val" "${@:2}"
   fi
   case $opt in
-    --mode) need "$1" "${2:-}"; MODE=$2; shift ;;
+    --mode) need "$1" "${2:-}"; MODE=$2 MODE_FROM_FILE=0; shift ;;
     --chains) need "$1" "${2:-}"; CHAINS_OPT=$2; shift ;;
     --remove) need "$1" "${2:-}"; REMOVE_OPT=$2; shift ;;
     --unit) need "$1" "${2:-}"; UNIT_ARG=${2%.service}; shift ;;
@@ -166,6 +168,7 @@ while (($#)); do
     --config) shift ;;
     --rpc) RPC=1 ;;
     --no-restart) RESTART=0 ;;
+    --start) START=1 ;;
     --purge) PURGE=1 ;;
     --force) FORCE=1 ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1 ;;
@@ -184,8 +187,10 @@ done
 case $MODE in '' | full | l1-only) ;; *) die "--mode is full or l1-only, not '$MODE'" ;; esac
 [[ $WAIT_SECS =~ ^[0-9]+$ ]] || die "--wait takes seconds, not '$WAIT_SECS'"
 [[ -z $PUBLIC_IP_ARG || $PUBLIC_IP_ARG =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "--public-ip $PUBLIC_IP_ARG is not an IPv4 address"
-read -r -a CHAINS <<<"$(parse_chain_list "$CHAINS_OPT")"
-read -r -a REMOVE <<<"$(parse_chain_list "$REMOVE_OPT")"
+chains_list=$(parse_chain_list "$CHAINS_OPT") || exit 1
+remove_list=$(parse_chain_list "$REMOVE_OPT") || exit 1
+read -r -a CHAINS <<<"$chains_list"
+read -r -a REMOVE <<<"$remove_list"
 for c in ${REMOVE[@]+"${REMOVE[@]}"}; do
   [[ " ${CHAINS[*]:-} " == *" $c "* ]] && die "$c is both in --chains and --remove"
 done
@@ -218,7 +223,10 @@ detect_situation() {
       *) die "found more than one metalgo service (${units[*]}); pass --unit NAME" ;;
     esac
   fi
-  if ((UNIT_MANAGED)) && [[ $UNIT_NAME == "$FRESH_UNIT" ]]; then
+  # Ours only if metalgo-setup wrote the unit itself, in its own place, running
+  # its own layout: never a node that merely has one of its drop-ins.
+  if ((UNIT_MANAGED)) && [[ $UNIT_NAME == "$FRESH_UNIT" && ${UNIT_FILES[0]:-} == "/etc/systemd/system/$FRESH_UNIT.service" &&
+    $UNIT_EXEC == *"--config-file=$FRESH_CONFIG"* ]]; then
     SITUATION=ours UNIT_MANAGED_BEFORE=1
   else
     SITUATION=existing
@@ -382,10 +390,11 @@ restart_node() {
   if [[ $SITUATION != existing ]]; then
     run systemctl enable "$unit"
   fi
-  if [[ $SITUATION != fresh ]] && ! ((RESTART)) && ! ((DRY_RUN)) && ! systemctl is-active --quiet "$unit" 2>/dev/null; then
-    # Stopped on purpose, perhaps for maintenance: --no-restart leaves it so.
+  if [[ $SITUATION != fresh ]] && ! ((START)) && ! ((DRY_RUN)) && ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+    # Stopped on purpose, perhaps for maintenance, or moved to another server
+    # with the same staking key (two copies must never run): left stopped.
     RESTARTED=0
-    warn "$UNIT_NAME is stopped; leaving it stopped (--no-restart). Start it when ready: sudo systemctl start $UNIT_NAME"
+    warn "$UNIT_NAME is stopped; leaving it stopped. Start it when ready: sudo systemctl start $UNIT_NAME (or re-run with --start)"
     return 0
   fi
   if [[ $SITUATION == fresh ]] || { ! ((DRY_RUN)) && ! systemctl is-active --quiet "$unit" 2>/dev/null; }; then
@@ -423,9 +432,9 @@ restart_node() {
 followers_note() {
   cat <<EOF
 
-The L1s run here as ${BOLD}followers${RESET} for now: the L1s have no validator manager
-yet, so this node syncs them, checks every block and serves them, but doesn't
-validate them. It is ready to be registered as a validator of each L1 later,
+The L1s run here as ${BOLD}followers${RESET} for now: this node syncs them, checks every
+block and serves them, but doesn't validate them until the L1's admins
+approve it (and while no admins are pinned, the L1s take no new validators). It is ready to be registered as a validator of each L1 later,
 when that opens (you'll need its NodeID: sudo ./setup.sh --status).
 
 No peg keys, and no Bitcoin, Litecoin or Dogecoin node, are needed for this:
@@ -508,10 +517,10 @@ validator_report() {
   if ((apply)); then
     cat <<EOF
 
-    To validate an L1 and earn its block fees: send its admin the request
-    above (all public: your NodeID, BLS key and proof of possession, and the
-    P-Chain address that owns the validator's METAL balance). The admin sends
-    back registration.json; register it yourself, paying the validator's
+    To validate an L1 and earn its block fees: send the L1's admins the
+    request above (all public: your NodeID, BLS key and proof of possession,
+    and the P-Chain address that owns the validator's METAL balance). Once
+    enough of them approve, you get back registration.json; register it yourself, paying the validator's
     P-Chain fee balance (about 1.3 METAL a month) with your own P-Chain key:
         <chain>-l1 register -registration registration.json -key your-p-chain-key.json -balance 5
     and set where your block fees go (restarts once):
@@ -649,6 +658,7 @@ EOF
   restart_node
 
   if ((TEST_ONLY)); then
+    [[ $SITUATION != existing ]] && ! ((DRY_RUN)) && fresh_identity
     log "TEST MODE: done (no waiting, no network)"
     return 0
   fi

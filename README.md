@@ -41,8 +41,9 @@ chain: more copies, more independence, a stronger network.
 **Earning:** there is no block reward on these L1s. The validator that builds
 each block takes its transaction fees, paid in BTC on BTCVM, LTC on LTCVM
 and DOGE on DogecoinVM, all backed by the peg. Today those fees are small
-(wallets pay about 1 sat, litoshi or koinu per payment). And the L1s **don't
-take outside validators yet**: a node you set up now is a *follower*. It
+(a BTCVM or LTCVM payment pays a few sats or litoshis; a DogecoinVM one about
+0.00025 DOGE). And the L1s **don't take outside validators yet** (they will
+once their admins are pinned in `lib/pins.sh`): a node you set up now is a *follower*. It
 syncs and serves the chain but builds no blocks, so it earns nothing yet.
 It's ready to be registered as a validator when that opens. (Validating the
 Metal primary network, which earns METAL staking rewards, is separate: see
@@ -58,7 +59,8 @@ Developed by Paul Grey @ [metallicus.com](https://metallicus.com).
 - On a server that **already runs metalgo**, including a primary-network
   validator, it adds the L1s and changes nothing else about the node: same
   binary, staking key, NodeID and settings, apart from the list of subnets it
-  tracks.
+  tracks and small systemd drop-ins (a stop that reaches metalgo only, and
+  a working directory of its own, away from the data dir; see below).
 
 ## Requirements
 
@@ -137,11 +139,13 @@ reconfigure metalgo, or touch the firewall or SSH.
    for each L1 to bootstrap, and prints its height next to the public RPC's.
 
 Every file it changes is backed up first, under
-`/var/backups/metalgo-setup/<time>/` (with its full path).
+`/var/backups/metalgo-setup/<time>/` (with its full path; root only, as
+config files there can hold passwords).
 
-These L1 nodes are **followers** for now: the L1s have no validator manager
-yet, so a node syncs and checks every block and serves the chain, but
-doesn't validate it. It is ready to be registered as a validator of each L1
+These L1 nodes are **followers** for now: the plugins have the validator
+manager, but no admins are pinned yet, so the L1s take no new validators. A
+node syncs and checks every block and serves the chain, but doesn't
+validate it. It is ready to be registered as a validator of each L1
 later. **No peg keys, and no Bitcoin, Litecoin or Dogecoin node, are
 needed**: those are only for the bridges' signers (see
 [bridge-operator](https://github.com/paulgnz/bridge-operator)).
@@ -154,7 +158,7 @@ needed**: those are only for the bridges' signers (see
 | Chain ID | `BYogm85qvZxwX4PitKLDPzNDbAgo61nw2NSXx5VVXyZZ8yGUK` | `oUbDoas3uim368iAQamSWWCWU9sXrq854Mtvv4iFSTUYsEBzm` | `2hFCfzdMmfXBxYgvvdL7BYiJAxdejyn4AksMYUM2eM5gN7Xrjy` |
 | Subnet ID | `SWJQGgyAvXY1aBczr7WupCGpLmukvP2YdXZJUvqm1td37EcJm` | `dhgtUfqjhYGfRkiN5dzF3ETmPHo1nDQvmLL2G7zJAVAXUujH3` | `2t2zEB1T3mNUE2WoheMFMjfhAvQJawtgiwnKPJz2NsFk7FDgyN` |
 | VM ID | `kMtihm7W3KssmcJb9mzwZfC6gkiPrJhWaa5KMLHdEB9R8Q4pp` | `pmL3MUsaBCgrTSaEiSy2NL6vXGtUcosT3TyXUL421W9hGa2g5` | `mEUwHwfd8UTHf23UYkQxHvy1n1EGwWieXQnjmtzSryJRZckzu` |
-| Source | [btc-vm](https://github.com/MetalBlockchain/btc-vm) `main` | [ltc-vm](https://github.com/MetalBlockchain/ltc-vm) `main` | [dogecoin-vm](https://github.com/MetalBlockchain/dogecoin-vm) `dogecoin` |
+| Source | [btc-vm](https://github.com/MetalBlockchain/btc-vm) `feature/l1-validators` | [ltc-vm](https://github.com/MetalBlockchain/ltc-vm) `feature/l1-validators` | [dogecoin-vm](https://github.com/MetalBlockchain/dogecoin-vm) `feature/l1-validators` |
 | Public RPC | https://metalbtc.com/rpc | https://metalltc.com/rpc | https://metaldoge.com/rpc |
 
 Every version, commit, hash and ID is in one file, [`lib/pins.sh`](lib/pins.sh).
@@ -183,7 +187,8 @@ sudo ./setup.sh --chains btcvm,dogevm
 The dry run shows what setup.sh found (unit, user, directories, tracked
 subnets, whether the node validates) and every change it would make. If your
 node **validates the Metal primary network**: adding the L1s keeps the same
-staking key, NodeID and settings apart from `track-subnets`. The one restart
+staking key, NodeID and settings apart from `track-subnets` and the systemd
+drop-ins above. The one restart
 takes the node offline for a few seconds; uptime counts over the whole
 staking period, so it doesn't put rewards at risk. To choose the moment,
 use `--no-restart` and later `sudo systemctl restart <unit>`.
@@ -200,6 +205,7 @@ use `--no-restart` and later `sudo systemctl restart <unit>`.
 --allow-downgrade     install an L1 plugin not newer than the one installed here
 --unit NAME           the existing metalgo service (default: found)
 --no-restart          change files, but leave the restart to you
+--start               start an existing metalgo that is stopped (otherwise left stopped)
 --wait SECONDS        how long to wait for bootstrapping (default 900; 0: don't)
 --harden-ssh          fresh install: key-only SSH logins
 --public-ip IP        fresh install: this server's public IPv4 (default: detected)
@@ -241,16 +247,18 @@ journalctl -u metalgo -f
 A node set up here follows the L1s; it doesn't validate them until the
 L1's admins approve it. Validators take turns building blocks, and each
 block pays its transaction fees to the validator that built it. There is
-no block reward, and fees are small (about 1 sat, litoshi or koinu per
-payment), so for now validating is about securing the chain more than
-income.
+no block reward, and fees are small (a few sats or litoshis per payment on
+BTCVM and LTCVM, about 0.00025 DOGE on DogecoinVM), so for now validating is
+about securing the chain more than income. Applications open once an L1's
+admins are pinned in `lib/pins.sh`; until then `--status` says the L1 takes
+no new validators.
 
 **How a node becomes a validator** (proof of authority: the L1's admins
 approve each one, several of them together). Each L1's manager is the chain
 itself. The P-Chain adds a validator only with a registration the L1's
 current validators sign, and they sign only one enough admins approved. A
-change that would let one validator block the others (a third or more of
-the weight, as while an L1 has only a few validators) needs every admin,
+change that would let one validator block the others (about a third of the
+weight or more, as while an L1 has only a few validators) needs every admin,
 and the validators sign one change at a time:
 
 1. **Run a node with the L1** (this installer) and let it sync:
@@ -294,7 +302,9 @@ the METAL balance is paid with an ordinary P-Chain key.
   it in the total, so `disable` refuses when the rest would fall under the
   67% any change needs; ask the admins to remove it instead.
 - Each validator remembers the one validator change it signed last (in
-  `<dataDir>/validator-manager/held-change.json`) and signs no other until
+  `<dataDir>/<network>/validator-manager/held-change.json`, where the network
+  is `btcvm`, `ltcvm` or `dogecoinvm`; with metalgo-setup, `<dataDir>` is
+  `<metalgo's data dir>/l1/<chain>/data`) and signs no other until
   that one is on the P-Chain or can't be. Never start a validator on a
   restored or copied data directory without telling the admins first: it
   could hold an older change than the one it really signed.
@@ -331,7 +341,9 @@ It won't remove an L1 this node validates (`--force` overrides that).
 - On an existing node, it doesn't upgrade or reconfigure metalgo, or change
   the firewall or SSH. It doesn't edit a YAML/TOML config file or
   `AVAGO_TRACK_SUBNETS`: it tells you the exact line to set instead.
-- It doesn't overwrite an L1's existing chain config.
+- It doesn't overwrite an L1's existing chain config: it only sets
+  `miningAddrs`, and the pinned `validatorAdmins` and
+  `validatorAdminThreshold`, in it, keeping everything else.
 - It supports Metal **mainnet** only.
 
 ## Development
