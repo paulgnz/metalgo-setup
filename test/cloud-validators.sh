@@ -190,14 +190,20 @@ submit() {
   "$T/$1-l1" submit $(L1 "$1") -node-uri "$(uri 1)" -proposal "$2" -payer-key "$T/payer.json" \
     -rpc-user "$1" -rpc-pass-file "$(rpc_pass_file "$1")" >"$3"
 }
-# propose CHAIN PROPOSAL REQUEST ADMIN...: a registration proposal for REQUEST,
-# approved by each admin (indexes into ADMIN_KEYS) in turn.
+# propose CHAIN PROPOSAL REQUEST ADMIN... [APPROVE-FLAGS...]: a registration
+# proposal for REQUEST, approved by each admin (indexes into ADMIN_KEYS) in
+# turn; flags such as -weight go to the first approve.
 propose() {
-  local c=$1 prop=$2 req=$3 first=$4 a
+  local c=$1 prop=$2 req=$3 first=$4 a admins=() extra=()
   shift 4
+  while (($#)); do
+    if [[ $1 == -* ]]; then extra=("$@"); break; fi
+    admins+=("$1")
+    shift
+  done
   # shellcheck disable=SC2046
-  "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$req" -key "${ADMIN_KEYS[$first]}" -yes >"$prop"
-  for a in "$@"; do
+  "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$req" -key "${ADMIN_KEYS[$first]}" -yes ${extra[@]+"${extra[@]}"} >"$prop"
+  for a in ${admins[@]+"${admins[@]}"}; do
     # shellcheck disable=SC2046
     "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$prop" -key "${ADMIN_KEYS[$a]}" -yes >"$prop.next" &&
       mv "$prop.next" "$prop"
@@ -212,14 +218,29 @@ submit_register() {
 }
 
 join_one() { # CHAIN SERVER
-  local c=$1 n=$2
+  local c=$1 n=$2 w=100
   [[ -f $T/registered-$c-$n.json ]] && { ok "$c: server $n already registered"; return; }
   "$T/$c-l1" request -node-uri "$(uri "$n")" -owner "$(payer_p)" >"$T/request-$c-$n.json"
-  # Every admin: while the set is small, a new validator holds a third or
-  # more of the weight, which needs them all.
-  propose "$c" "$T/proposal-$c-$n.json" "$T/request-$c-$n.json" 0 1 2
+  # A newcomer can't sign until it's active, so the second and third join
+  # small (the validators able to sign must keep 67%) and are raised after.
+  case $n in 2) w=40 ;; 3) w=90 ;; esac
+  # Every admin: while the set is small, one validator could block the 67%.
+  propose "$c" "$T/proposal-$c-$n.json" "$T/request-$c-$n.json" 0 1 2 -weight "$w"
   settling submit_register "$c" "$n"
-  ok "$c: server $n ($(jq -r .nodeID "$T/registration-$c-$n.json")) registered: $(jq -r .txID "$T/registered-$c-$n.json")"
+  ok "$c: server $n ($(jq -r .nodeID "$T/registration-$c-$n.json")) registered at weight $w: $(jq -r .txID "$T/registered-$c-$n.json")"
+  if ((w != 100)); then
+    # shellcheck disable=SC2046
+    "$T/$c-l1" set-weight $(L1 "$c") -node-uri "$(uri 1)" -validation-id "$(jq -r .validationID "$T/registration-$c-$n.json")" \
+      -weight 100 -key "${ADMIN_KEYS[0]}" -yes >"$T/raise-$c-$n.json"
+    local a
+    for a in 1 2; do
+      # shellcheck disable=SC2046
+      "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/raise-$c-$n.json" -key "${ADMIN_KEYS[$a]}" -yes \
+        >"$T/raise-$c-$n.json.next" && mv "$T/raise-$c-$n.json.next" "$T/raise-$c-$n.json"
+    done
+    settling submit "$c" "$T/raise-$c-$n.json" "$T/raised-$c-$n.json"
+    ok "$c: server $n raised to weight 100"
+  fi
 }
 
 case $PHASE in
@@ -324,8 +345,12 @@ case $PHASE in
       nid=$(jq -r .nodeID "$T/registration-$c-$LAST.json")
       wait_for 120 "$nid off $c's validators" bash -c "! '$T/$c-l1' validators $(L1 "$c") -node-uri '$(uri 1)' | jq -e --arg n '$nid' 'map(.nodeID) | index(\$n)' >/dev/null"
       ok "$c: server $LAST removed"
+      # A block's proposers come from its parent's P-Chain height, moved on
+      # only to the P-Chain's lagged minimum (a block at least 30s old): wait
+      # until the removal is that old, build a few blocks (they carry it),
+      # then check.
+      sleep 45
       pay "$c" 3
-      sleep 120
       first=$(($(height "$c") + 1))
       pay "$c" 15
       for h in $(seq "$first" "$(height "$c")"); do

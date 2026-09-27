@@ -266,16 +266,17 @@ relative_paths() {
 }
 
 # chain_config_relative_paths: the chain configs whose meaning could follow
-# the plugin's working directory; one per line, with why. A value counts as
-# a path when its key ends in dir, directory, file, path, key, cert,
-# profile, conf or config (Coreth's keystore-directory, btcd's rpcKey,
-# configFile ...), or it holds a slash. It is safe only if absolute:
-# metalgo doesn't expand $VARIABLES in chain configs. An L1 config (BTCVM,
-# LTCVM, DogecoinVM) needs an absolute dataDir, whose default is relative;
-# a btcd configFile (INI) is read too. A config that isn't JSON can't be
-# checked, so it counts.
+# the plugin's working directory; one per line, with why. A path is a value
+# whose key ends in dir, directory, file, path, conf, config or cert, or is
+# rpcKey (Coreth's keystore-directory, btcd's dataDir, rpcCert ...), but
+# not btcd's profile (a port). It is
+# safe only if absolute: metalgo doesn't expand $VARIABLES in chain configs.
+# An L1 config (BTCVM, LTCVM, DogecoinVM) needs an absolute dataDir, whose
+# default is relative; the btcd INI files it reads are checked too: its
+# configFile, and <dataDir>/btcdvm-home/btcd.conf, which btcd reads unasked.
+# A config that isn't JSON can't be checked, so it counts.
 chain_config_relative_paths() {
-  local f id ini c ours
+  local f id ini c ours data why
   for f in "$CHAIN_CONFIG_DIR"/*/config.*; do
     [[ -f $f ]] || continue
     if ! jq -e . "$f" >/dev/null 2>&1; then
@@ -283,7 +284,7 @@ chain_config_relative_paths() {
       continue
     fi
     if jq -r '[paths(strings) as $p | {k: ($p[-1] | tostring), v: getpath($p)}
-        | select((.k | test("(dir|directory|file|path|key|cert|profile|conf|config)$"; "i")) or (.v | test("/")))
+        | select((.k | test("(dir|directory|file|path|conf|config|cert)$|^rpckey$"; "i")) and (.k | test("^profile$"; "i") | not))
         | .v | select(. != "" and (startswith("/") | not))] | .[]' "$f" 2>/dev/null | grep -q .; then
       echo "$f (a relative path)"
       continue
@@ -294,15 +295,21 @@ chain_config_relative_paths() {
       echo "$f (no absolute dataDir: the default follows the working directory)"
       continue
     fi
-    ini=$(jq -r '.configFile // empty' "$f" 2>/dev/null)
-    if [[ -n $ini ]]; then
-      if [[ $ini != /* || ! -r $ini ]]; then
-        echo "$f (its configFile $ini is relative or unreadable)"
-      elif grep -Ei '^[[:space:]]*[a-z]*(dir|directory|file|path|key|cert|profile|conf|config)[[:space:]]*=' "$ini" |
+    data=$(jq -r '.dataDir // empty' "$f" 2>/dev/null)
+    for ini in "$(jq -r '.configFile // empty' "$f" 2>/dev/null)" "${data:+$data/btcdvm-home/btcd.conf}"; do
+      [[ -n $ini ]] || continue
+      why=
+      if [[ $ini != /* ]]; then
+        why="its btcd config $ini is relative"
+      elif [[ -e $ini && ! -r $ini ]]; then
+        why="its btcd config $ini is unreadable"
+      elif [[ -r $ini ]] && grep -Ei '^[[:space:]]*([a-z]*(dir|directory|file|path|conf|config|cert)|rpckey)[[:space:]]*=' "$ini" |
+        grep -viE '^[[:space:]]*profile[[:space:]]*=' |
         sed -E 's/^[^=]*=[[:space:]]*//' | grep -vE '^(/|$)' | grep -q .; then
-        echo "$f (its configFile $ini has a relative path)"
+        why="its btcd config $ini has a relative path"
       fi
-    fi
+      [[ -n $why ]] && { echo "$f ($why)"; break; }
+    done
   done
   return 0
 }

@@ -366,8 +366,8 @@ EOF
     make_flags_node
     # A copy of the repo with an admin pinned for BTCVM (the pins ship empty).
     cp -r /src /tmp/repo
-    ADMIN=P-metal1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqs4d8zd
-    ADMIN2=P-metal1qyqszqgpqyqszqgpqyqszqgpqyqszqgpvn0ql6
+    ADMIN=P-metal1qyqszqgpqyqszqgpqyqszqgpqyqszqgpzj5rty
+    ADMIN2=P-metal1qgpqyqszqgpqyqszqgpqyqszqgpqyqsznkjxqj
     sed -i "s|^btcvm_VALIDATOR_ADMINS=\"\"|btcvm_VALIDATOR_ADMINS=\"$ADMIN $ADMIN2\"|" /tmp/repo/lib/pins.sh
     sed -i 's|^btcvm_VALIDATOR_ADMIN_THRESHOLD=""|btcvm_VALIDATOR_ADMIN_THRESHOLD="3"|' /tmp/repo/lib/pins.sh
     SETUP=/tmp/repo/setup.sh check "refuses a threshold above the admins" fails_with "must be between 1 and its 2 admins" --chains btcvm --dry-run
@@ -393,7 +393,7 @@ EOF
     check "the old config backed up" bash -c "ls /var/backups/metalgo-setup/*$cfg >/dev/null"
 
     step "new admins, no pinned threshold: the old threshold goes (the plugin's default applies)"
-    ADMIN3=P-metal1qgpqyqszqgpqyqszqgpqyqszqgpqyqszrtw3dd
+    ADMIN3=P-metal1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrjxn82n
     sed -i "s|^btcvm_VALIDATOR_ADMINS=.*|btcvm_VALIDATOR_ADMINS=\"$ADMIN $ADMIN2 $ADMIN3\"|" /tmp/repo/lib/pins.sh
     sed -i 's|^btcvm_VALIDATOR_ADMIN_THRESHOLD=.*|btcvm_VALIDATOR_ADMIN_THRESHOLD=""|' /tmp/repo/lib/pins.sh
     /tmp/repo/setup.sh --mining-address "btcvm=$FEES2" >/tmp/run3.log 2>&1

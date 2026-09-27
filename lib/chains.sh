@@ -37,20 +37,23 @@ build_tools() {
 # The plugin file's SHA-256, or empty.
 file_sha() { [[ -f $1 ]] && sha256sum "$1" | cut -d' ' -f1; }
 
-# downgrade_guard CHAIN SRC STAMP COMMIT: refuses to install a pin older than
-# the build metalgo-setup installed here last (an old metalgo-setup, or old
-# pins, run again): an older plugin can lack what the newer one relied on,
-# such as the validator manager enforcing the admins in its chain config.
+# downgrade_guard CHAIN SRC STAMP COMMIT: installs a pin other than the build
+# metalgo-setup installed here last only if the pin is newer, that build
+# being one of its ancestors. An older pin (an old metalgo-setup, or old
+# pins, run again) can lack what the newer build relied on, such as the
+# validator manager enforcing the admins in its chain config; one whose
+# history can't be shown to include the last build (another branch, or a
+# commit this copy doesn't have) could be anything.
 downgrade_guard() {
   local c=$1 src=$2 stamp=$3 commit=$4 prev title
   [[ -f $stamp ]] || return 0
   prev=$(cut -d' ' -f1 "$stamp")
   [[ -n $prev && $prev != "$commit" ]] || return 0
-  ((DRY_RUN)) && { info "(stops if $commit is older than the installed $prev)"; return 0; }
-  build_env git -C "$src" merge-base --is-ancestor "$commit" "$prev" 2>/dev/null || return 0
+  ((DRY_RUN)) && { info "(stops unless $commit is newer than the installed $prev)"; return 0; }
+  build_env git -C "$src" merge-base --is-ancestor "$prev" "$commit" 2>/dev/null && return 0
   title=$(chain_var "$c" TITLE)
-  ((ALLOW_DOWNGRADE)) || die "$title: the pinned $commit is older than the $prev metalgo-setup installed here. Update metalgo-setup (git pull), or pass --allow-downgrade if you mean to go back."
-  warn "$title: going back from $prev to the older $commit (--allow-downgrade)"
+  ((ALLOW_DOWNGRADE)) || die "$title: the pinned $commit isn't newer than the $prev metalgo-setup installed here (older, or on another line). Update metalgo-setup (git pull), or pass --allow-downgrade if you mean it."
+  warn "$title: installing $commit over $prev, which it doesn't descend from (--allow-downgrade)"
 }
 
 # install_plugin CHAIN: builds the plugin at its pin as the build user, checks
@@ -245,6 +248,22 @@ validator_settings() {
       elif $n > 1 and $t < 2 then "threshold 1 with \($n) admins"
       else "ok" end' <<<"$merged")
   [[ $policy == ok ]] || die "$cfg would get validatorAdminThreshold $policy, which the $title plugin refuses; fix lib/pins.sh or the config"
+  # And as the plugin itself reads it (addresses, duplicates, the threshold's
+  # type), when there are admins: the pinned plugin must be one that
+  # enforces them.
+  local plugin
+  plugin=$PLUGIN_DIR/$(chain_var "$c" VM_ID)
+  if [[ -n $admins ]] && ((DRY_RUN)); then
+    info "(stops unless the new $title plugin accepts these validator settings: $plugin -check-config)"
+  elif [[ -n $admins ]] && ! ((TEST_ONLY)) && [[ -x $plugin ]]; then
+    local out
+    if ! out=$(runuser -u "$UNIT_USER" -- "$plugin" -check-config - <<<"$merged" 2>&1); then
+      if grep -q "unknown shorthand flag" <<<"$out"; then
+        die "the $title plugin in $PLUGIN_DIR predates the validator manager, so it can't enforce validatorAdmins; pin a newer commit"
+      fi
+      die "$cfg: the $title plugin refuses these validator settings: $(tail -1 <<<"$out")"
+    fi
+  fi
   write_file "$cfg" "0$mode" "$owner" <<<"$merged"
   SECRET_CONTENT=0
   if ((FILE_CHANGED)); then

@@ -49,8 +49,8 @@ usage: sudo ./setup.sh [options]          (no options: a short menu)
   --purge                 with --remove: delete the L1s' data and configs too
   --update                rebuild the L1s already on this node at the current
                           pins (and, on a node metalgo-setup installed, metalgo)
-  --allow-downgrade       install an L1 plugin older than the one metalgo-setup
-                          installed here (refused otherwise)
+  --allow-downgrade       install an L1 plugin that isn't newer than the one
+                          metalgo-setup installed here (refused otherwise)
   --unit NAME             the existing metalgo's systemd service (default: found)
   --no-restart            change files but don't restart metalgo (restart it
                           yourself when it suits: systemctl restart UNIT)

@@ -197,7 +197,7 @@ use `--no-restart` and later `sudo systemctl restart <unit>`.
 --remove LIST         L1s to remove (data kept unless --purge)
 --purge               with --remove: delete their data and configs too
 --update              rebuild the L1s on this node at the current pins
---allow-downgrade     install an L1 plugin older than the one installed here
+--allow-downgrade     install an L1 plugin not newer than the one installed here
 --unit NAME           the existing metalgo service (default: found)
 --no-restart          change files, but leave the restart to you
 --wait SECONDS        how long to wait for bootstrapping (default 900; 0: don't)
@@ -265,7 +265,9 @@ and the validators sign one change at a time:
    ```
 3. **Approval.** The admins check who you are and approve, each on their
    own machine; the validators co-sign; you get back `registration.json`,
-   valid for up to a day.
+   valid for up to a day. While an L1 has only a few validators, a newcomer joins at a
+   small weight (it can't sign until it's funded and online) and the admins
+   raise it once it's active.
 4. **Register** it on the P-Chain yourself, prepaying the validator's
    continuous P-Chain fee (about 1.3 METAL a month) from your own P-Chain key:
    ```sh
@@ -284,6 +286,18 @@ and the validators sign one change at a time:
 
 Nothing here needs a special wallet: fees arrive at a normal address, and
 the METAL balance is paid with an ordinary P-Chain key.
+
+**For validator operators:**
+- Use your own P-Chain key as the owner in your request, never one shared
+  with other operators: the owner can disable the validator.
+- Disabling takes your validator's weight out of what can sign but leaves
+  it in the total, so `disable` refuses when the rest would fall under the
+  67% any change needs; ask the admins to remove it instead.
+- Each validator remembers the one validator change it signed last (in
+  `<dataDir>/validator-manager/held-change.json`) and signs no other until
+  that one is on the P-Chain or can't be. Never start a validator on a
+  restored or copied data directory without telling the admins first: it
+  could hold an older change than the one it really signed.
 
 ## Update
 
