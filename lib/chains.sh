@@ -193,6 +193,9 @@ validator_settings() {
     if ! [[ $threshold =~ ^[1-9][0-9]*$ ]] || ((threshold > n)); then
       die "lib/pins.sh: ${c}_VALIDATOR_ADMIN_THRESHOLD=$threshold must be between 1 and its $n admins"
     fi
+    if ((n > 1 && threshold < 2)); then
+      die "lib/pins.sh: ${c}_VALIDATOR_ADMIN_THRESHOLD=1 with $n admins lets any one of them change the validators; the plugin refuses it too"
+    fi
   fi
   [[ -z $admins && -z $mining ]] && return 0
   if ! cfg=$(existing_chain_config "$c"); then
@@ -249,6 +252,9 @@ workdir_guard() {
     printf '%s' "${hit[*]}"
   ) (older L1 plugins delete ./db and move ./data and ./btcd.conf in it)"
   if ((REL_PATHS)); then
+    local configs
+    configs=$(chain_config_relative_paths)
+    [[ -n $configs ]] && warn "chain configs with relative paths (they follow the working directory): $(tr '\n' ' ' <<<"$configs")"
     die "$UNIT_NAME's settings use relative paths, so metalgo-setup won't move its working directory. Set WorkingDirectory= to an empty directory yourself (and make those paths absolute), then re-run."
   fi
   safe=$DATA_DIR/metalgo-setup-workdir

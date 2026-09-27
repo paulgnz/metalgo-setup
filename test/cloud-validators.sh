@@ -188,9 +188,13 @@ join_one() { # CHAIN SERVER
   # shellcheck disable=SC2046
   # shellcheck disable=SC2329 # run through settling below
   approve_register() {
-    "$T/$c-l1" approve $(L1 "$c") -request "$T/request-$c-$n.json" -key "${ADMIN_KEYS[0]}" \
+    # Every admin: while the set is small, a new validator holds a third
+    # or more of the weight, which needs them all.
+    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$n.json" -key "${ADMIN_KEYS[0]}" -yes \
       >"$T/proposal-$c-$n.json" || return 1
-    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$n.json" -key "${ADMIN_KEYS[1]}" \
+    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$n.json" -key "${ADMIN_KEYS[1]}" -yes \
+      >"$T/proposal-$c-$n.json.2" || return 1
+    "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$n.json.2" -key "${ADMIN_KEYS[2]}" -yes \
       -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >"$reg" || return 1
     "$T/$c-l1" register -registration "$reg" -key "$T/payer.json" -uri "$(uri "$n")" -balance 1 >"$T/registered-$c-$n.json.tmp" &&
       mv "$T/registered-$c-$n.json.tmp" "$T/registered-$c-$n.json"
@@ -294,9 +298,9 @@ case $PHASE in
       # shellcheck disable=SC2046
       # shellcheck disable=SC2329 # run through settling below
       remove_last() {
-        "$T/$c-l1" remove $(L1 "$c") -node-uri "$(uri 1)" -validation-id "$vid" -key "${ADMIN_KEYS[0]}" \
+        "$T/$c-l1" remove $(L1 "$c") -node-uri "$(uri 1)" -validation-id "$vid" -key "${ADMIN_KEYS[0]}" -yes \
           >"$T/remove-$c-$LAST.json" || return 1
-        "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/remove-$c-$LAST.json" -key "${ADMIN_KEYS[2]}" \
+        "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/remove-$c-$LAST.json" -key "${ADMIN_KEYS[2]}" -yes \
           -payer-key "$T/payer.json" -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >/dev/null
       }
       settling remove_last
@@ -346,14 +350,26 @@ case $PHASE in
       log "$c: server $LAST applies again; one admin can't approve it alone"
       "$T/$c-l1" request -node-uri "$(uri "$LAST")" -owner "$(payer_p)" >"$T/request-$c-$LAST.json"
       # shellcheck disable=SC2046
-      if "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$LAST.json" -key "${ADMIN_KEYS[0]}" \
+      if "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$LAST.json" -key "${ADMIN_KEYS[0]}" -yes \
         -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >/dev/null 2>"$T/mofn-$c.err"; then
         fail "$c: one admin alone got a registration signed"
       fi
       grep -q "it needs $ADMIN_THRESHOLD" "$T/mofn-$c.err" || { cat "$T/mofn-$c.err"; fail "$c: unexpected refusal"; }
       ok "$c: refused: $(grep -o "approved by 1 of this L1's admins; it needs $ADMIN_THRESHOLD" "$T/mofn-$c.err" | head -1)"
-      rm -f "$T/registered-$c-$LAST.json"
-      join_one "$c" "$LAST"
+      # Server LAST as the sixth validator (1/6 each): two admins suffice.
+      # shellcheck disable=SC2046
+      "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -request "$T/request-$c-$LAST.json" -key "${ADMIN_KEYS[0]}" -yes \
+        >"$T/proposal-$c-$LAST.json"
+      # shellcheck disable=SC2329 # run through settling below
+      two_admins() {
+        # shellcheck disable=SC2046
+        "$T/$c-l1" approve $(L1 "$c") -node-uri "$(uri 1)" -proposal "$T/proposal-$c-$LAST.json" -key "${ADMIN_KEYS[1]}" -yes \
+          -rpc-user "$c" -rpc-pass-file "$(rpc_pass_file "$c")" >"$T/registration-$c-$LAST.json" || return 1
+        "$T/$c-l1" register -registration "$T/registration-$c-$LAST.json" -key "$T/payer.json" -uri "$(uri "$LAST")" -balance 1 \
+          >"$T/registered-$c-$LAST.json"
+      }
+      settling two_admins
+      ok "$c: server $LAST registered with two admins' approval: $(jq -r .txID "$T/registered-$c-$LAST.json")"
     done
     for c in "${CHAINS[@]}"; do
       nid=$(jq -r .nodeID "$T/registration-$c-$LAST.json")

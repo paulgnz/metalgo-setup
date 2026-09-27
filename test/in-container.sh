@@ -413,7 +413,13 @@ EOF
     step "relative paths: refuses to move the working directory"
     rm -rf /etc/systemd/system/metal-mainnet.service.d "/opt/ltcvm/plugins/$btcvm_VM_ID"
     sed -i 's|--log-dir=/opt/ltcvm/logs|--log-dir=logs|' "$unit"
-    check "refuses, and says what to do" fails_with "uses relative paths" --chains btcvm
+    check "refuses, and says what to do" fails_with "settings use relative paths" --chains btcvm
+
+    step "a relative dataDir in a chain config: refuses too"
+    sed -i 's|--log-dir=logs|--log-dir=/opt/ltcvm/logs|' "$unit"
+    cc=/opt/ltcvm/chain-configs/$ltcvm_CHAIN_ID/config.json
+    jq '.dataDir = "chaindata"' "$cc" >/tmp/cc.json && cp /tmp/cc.json "$cc"
+    check "refuses, naming the chain config" fails_with "chain configs with relative paths" --chains btcvm
     ;;
 
   *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;

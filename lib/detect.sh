@@ -261,7 +261,27 @@ relative_paths() {
   done
   jq -r 'to_entries[] | select(.key | test("-(dir|file)$"; "i")) | .value | strings' <<<"$CFG_JSON" 2>/dev/null |
     grep -qvE '^(/|\$|$)' && { echo 1; return; }
+  [[ -n $(chain_config_relative_paths) ]] && { echo 1; return; }
   echo 0
+}
+
+# chain_config_relative_paths: the chain configs whose paths (keys ending
+# in dir, file or path, e.g. an L1's "dataDir") are relative, and so follow
+# the plugin's working directory; one per line. A config that isn't JSON
+# can't be checked, so it counts too.
+chain_config_relative_paths() {
+  local f
+  for f in "$CHAIN_CONFIG_DIR"/*/config.*; do
+    [[ -f $f ]] || continue
+    if ! jq -e . "$f" >/dev/null 2>&1; then
+      echo "$f (not JSON, so metalgo-setup can't check it)"
+      continue
+    fi
+    jq -r '[paths(strings) as $p | select(($p[-1] | tostring) | test("(dir|file|path)$"; "i"))
+            | getpath($p)] | .[] | select(test("^(/|\\$)") | not) | select(. != "")' "$f" 2>/dev/null |
+      grep -q . && echo "$f"
+  done
+  return 0
 }
 
 # parse_exec: splits ExecStart into NODE_BIN and FLAGS (name -> value, the
