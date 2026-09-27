@@ -239,29 +239,33 @@ journalctl -u metalgo -f
 ## Validating an L1 and earning its fees
 
 A node set up here follows the L1s; it doesn't validate them until the
-L1's admin approves it. Validators take turns building blocks, and each
+L1's admins approve it. Validators take turns building blocks, and each
 block pays its transaction fees to the validator that built it. There is
 no block reward, and fees are small (about 1 sat, litoshi or koinu per
 payment), so for now validating is about securing the chain more than
 income.
 
-**How a node becomes a validator** (proof of authority: the admin approves
-each one). Each L1's manager is the chain itself. The P-Chain adds a
-validator only with a registration the L1's current validators sign, and
-they sign only one the admin approved:
+**How a node becomes a validator** (proof of authority: the L1's admins
+approve each one, several of them together). Each L1's manager is the chain
+itself. The P-Chain adds a validator only with a registration the L1's
+current validators sign, and they sign only one enough admins approved. A
+change that would let one validator block the others (a third or more of
+the weight, as while an L1 has only a few validators) needs every admin,
+and the validators sign one change at a time:
 
 1. **Run a node with the L1** (this installer) and let it sync:
-   `sudo ./setup.sh --status` shows your NodeID.
+   `sudo ./setup.sh --status` shows your NodeID. It must have finished
+   syncing before it's registered: it counts as a validator at once.
 2. **Request.** With the L1's tool (`cmd/btcvm-l1`, `cmd/ltcvm-l1`,
    `cmd/dogevm-l1` in its repo), make a request. It's all public: your
    NodeID, BLS key and proof of possession, and the P-Chain address that
-   will own the validator's METAL balance. Send it to the admin.
+   will own the validator's METAL balance. Send it to the admins.
    ```sh
    btcvm-l1 request -node-uri http://127.0.0.1:9650 -owner P-metal1... > request.json
    ```
-3. **Approval.** The admin checks who you are, then approves; the
-   validators co-sign; the admin sends back `registration.json`, valid for an
-   hour.
+3. **Approval.** The admins check who you are and approve, each on their
+   own machine; the validators co-sign; you get back `registration.json`,
+   valid for up to a day.
 4. **Register** it on the P-Chain yourself, prepaying the validator's
    continuous P-Chain fee (about 1.3 METAL a month) from your own P-Chain key:
    ```sh
