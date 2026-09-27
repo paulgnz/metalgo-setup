@@ -49,8 +49,8 @@ btcvm_CHAIN_ID=BYogm85qvZxwX4PitKLDPzNDbAgo61nw2NSXx5VVXyZZ8yGUK
 btcvm_SUBNET_ID=SWJQGgyAvXY1aBczr7WupCGpLmukvP2YdXZJUvqm1td37EcJm
 btcvm_VM_ID=kMtihm7W3KssmcJb9mzwZfC6gkiPrJhWaa5KMLHdEB9R8Q4pp
 btcvm_REPO=https://github.com/MetalBlockchain/btc-vm
-btcvm_BRANCH=main
-btcvm_COMMIT=3bb1cf23c2d5e89fc6e7e4cc41f737b9621a19e3
+btcvm_BRANCH=feature/l1-validators
+btcvm_COMMIT=dabb0a9e797f96d64f24319b426748a4e5ca959c
 btcvm_PLUGIN_PKG=./cmd/btcvm-plugin
 btcvm_PUBLIC_RPC=https://metalbtc.com/rpc
 btcvm_PUBLIC_RPC_AUTH=public:public
@@ -62,8 +62,8 @@ ltcvm_CHAIN_ID=oUbDoas3uim368iAQamSWWCWU9sXrq854Mtvv4iFSTUYsEBzm
 ltcvm_SUBNET_ID=dhgtUfqjhYGfRkiN5dzF3ETmPHo1nDQvmLL2G7zJAVAXUujH3
 ltcvm_VM_ID=pmL3MUsaBCgrTSaEiSy2NL6vXGtUcosT3TyXUL421W9hGa2g5
 ltcvm_REPO=https://github.com/MetalBlockchain/ltc-vm
-ltcvm_BRANCH=main
-ltcvm_COMMIT=f8fd3b969ef2c7de4b63feefffddaa9f3147aed3
+ltcvm_BRANCH=feature/l1-validators
+ltcvm_COMMIT=971e042968c4e1739335aa9dbdde57640458c359
 ltcvm_PLUGIN_PKG=./cmd/ltcvm-plugin
 ltcvm_PUBLIC_RPC=https://metalltc.com/rpc
 ltcvm_PUBLIC_RPC_AUTH=public:public
@@ -75,8 +75,8 @@ dogevm_CHAIN_ID=2hFCfzdMmfXBxYgvvdL7BYiJAxdejyn4AksMYUM2eM5gN7Xrjy
 dogevm_SUBNET_ID=2t2zEB1T3mNUE2WoheMFMjfhAvQJawtgiwnKPJz2NsFk7FDgyN
 dogevm_VM_ID=mEUwHwfd8UTHf23UYkQxHvy1n1EGwWieXQnjmtzSryJRZckzu
 dogevm_REPO=https://github.com/MetalBlockchain/dogecoin-vm
-dogevm_BRANCH=dogecoin
-dogevm_COMMIT=8e91a6b47ac3e55e724dc9fef63bf5239c55dffb
+dogevm_BRANCH=feature/l1-validators
+dogevm_COMMIT=636081f396b0e9266c9431f40537102ce72c7972
 dogevm_PLUGIN_PKG=./cmd/dogevm-plugin
 dogevm_PUBLIC_RPC=https://metaldoge.com/rpc
 dogevm_PUBLIC_RPC_AUTH=public:public
@@ -88,9 +88,10 @@ dogevm_L1_TOOL=dogevm-l1
 # sign a validator change (proof of authority; vm/validator_manager.go in
 # each VM repo). Written into every chain config as "validatorAdmins", so a
 # node registered as a validator co-signs approved changes. Public
-# addresses, space-separated. Empty until the L1's admin keys exist and its
-# validators run a plugin with the validator manager (the COMMIT pins above
-# predate it): until then the L1 takes no new validators.
+# addresses, space-separated. The COMMIT pins above have the validator
+# manager (reviewed; it signs nothing while no admins are set, and block
+# validity is unchanged). Empty until the admins' keys exist and the L1's
+# own validators run it: until then the L1 takes no new validators.
 btcvm_VALIDATOR_ADMINS=""
 ltcvm_VALIDATOR_ADMINS=""
 dogevm_VALIDATOR_ADMINS=""
