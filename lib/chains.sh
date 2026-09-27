@@ -45,13 +45,21 @@ file_sha() { [[ -f $1 ]] && sha256sum "$1" | cut -d' ' -f1; }
 # history can't be shown to include the last build (another branch, or a
 # commit this copy doesn't have) could be anything.
 downgrade_guard() {
-  local c=$1 src=$2 stamp=$3 commit=$4 prev title
-  [[ -f $stamp ]] || return 0
+  local c=$1 src=$2 stamp=$3 commit=$4 dest=$5 prev title
+  title=$(chain_var "$c" TITLE)
+  if [[ ! -f $stamp ]]; then
+    # A plugin metalgo-setup has no record of building: whether the pin is
+    # newer can't be shown.
+    [[ -e $dest ]] || return 0
+    ((DRY_RUN)) && { info "(stops unless --allow-downgrade: metalgo-setup didn't build the $title plugin in place)"; return 0; }
+    ((ALLOW_DOWNGRADE)) || die "$title: $dest wasn't built by metalgo-setup, so it can't tell whether the pinned $commit is newer. Pass --allow-downgrade to replace it with the pinned build."
+    warn "$title: replacing $dest, which metalgo-setup didn't build (--allow-downgrade)"
+    return 0
+  fi
   prev=$(cut -d' ' -f1 "$stamp")
   [[ -n $prev && $prev != "$commit" ]] || return 0
   ((DRY_RUN)) && { info "(stops unless $commit is newer than the installed $prev)"; return 0; }
   build_env git -C "$src" merge-base --is-ancestor "$prev" "$commit" 2>/dev/null && return 0
-  title=$(chain_var "$c" TITLE)
   ((ALLOW_DOWNGRADE)) || die "$title: the pinned $commit isn't newer than the $prev metalgo-setup installed here (older, or on another line). Update metalgo-setup (git pull), or pass --allow-downgrade if you mean it."
   warn "$title: installing $commit over $prev, which it doesn't descend from (--allow-downgrade)"
 }
@@ -78,7 +86,7 @@ install_plugin() {
     mv -f "$out/plugin.test" "$out/plugin"
   else
     checkout_pinned "$src" "$repo" "$branch" "$commit"
-    downgrade_guard "$c" "$src" "$stamp" "$commit"
+    downgrade_guard "$c" "$src" "$stamp" "$commit" "$dest"
     as_build mkdir -p "$out"
     # The plugin's file name must be the VM ID the L1 was created with.
     if ((DRY_RUN)); then
@@ -249,13 +257,15 @@ validator_settings() {
       else "ok" end' <<<"$merged")
   [[ $policy == ok ]] || die "$cfg would get validatorAdminThreshold $policy, which the $title plugin refuses; fix lib/pins.sh or the config"
   # And as the plugin itself reads it (addresses, duplicates, the threshold's
-  # type), when there are admins: the pinned plugin must be one that
-  # enforces them.
-  local plugin
+  # type), whenever the config has admin settings: the pinned plugin must be
+  # one that enforces them.
+  local plugin policy_set=0
   plugin=$PLUGIN_DIR/$(chain_var "$c" VM_ID)
-  if [[ -n $admins ]] && ((DRY_RUN)); then
+  # Pinned now or kept from before: either way the plugin must accept it.
+  jq -e 'has("validatorAdmins") or has("validatorAdminThreshold")' <<<"$merged" >/dev/null && policy_set=1
+  if ((policy_set && DRY_RUN)); then
     info "(stops unless the new $title plugin accepts these validator settings: $plugin -check-config)"
-  elif [[ -n $admins ]] && ! ((TEST_ONLY)) && [[ -x $plugin ]]; then
+  elif ((policy_set)) && ! ((TEST_ONLY)) && [[ -x $plugin ]]; then
     local out
     if ! out=$(runuser -u "$UNIT_USER" -- "$plugin" -check-config - <<<"$merged" 2>&1); then
       if grep -q "unknown shorthand flag" <<<"$out"; then
